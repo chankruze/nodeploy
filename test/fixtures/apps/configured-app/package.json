@@ -1,0 +1,6 @@
+{
+  "name": "configured-app",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "malformed-config-app",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

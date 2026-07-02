@@ -1,0 +1,10 @@
+{
+  "name": "nest-app",
+  "scripts": {
+    "build": "nest build",
+    "start:prod": "node dist/main"
+  },
+  "dependencies": {
+    "@nestjs/core": "^10.0.0"
+  }
+}
