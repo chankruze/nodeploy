@@ -1,0 +1,39 @@
+{
+  "name": "nodeploy",
+  "version": "0.1.0",
+  "description": "A lightweight, self-hosted deployment CLI for running multiple Node.js apps behind PM2",
+  "type": "module",
+  "bin": {
+    "nodeploy": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "deploy",
+    "pm2",
+    "cli",
+    "self-hosted"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^15.0.0",
+    "execa": "^9.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.9"
+  }
+}
