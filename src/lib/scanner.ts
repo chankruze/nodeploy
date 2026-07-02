@@ -1,7 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { loadAppConfig } from "./appConfig.js";
-import type { AppConfig, PackageJson } from "../types.js";
+import { detectAppType, resolveCommands } from "./detector.js";
+import {
+  detectPackageManager,
+  resolveInstallCmd,
+} from "./packageManager.js";
+import type { AppConfig, DetectedApp, PackageJson } from "../types.js";
 
 export interface ScannedApp {
   dir: string;
@@ -68,4 +73,23 @@ export function findApp(appsDir: string, name: string): ScannedApp | undefined {
   return apps.find(
     (app) => app.appConfig?.name === name || app.dirName === name,
   );
+}
+
+export function toDetectedApp(app: ScannedApp): DetectedApp {
+  const type = detectAppType(app.pkg);
+  const { buildCmd, startCmd } = resolveCommands(type, app.pkg);
+  const packageManager = detectPackageManager(app.dir);
+
+  return {
+    name: app.appConfig?.name ?? app.dirName,
+    dir: app.dir,
+    port: app.appConfig?.port,
+    type,
+    packageManager,
+    installCmd: resolveInstallCmd(packageManager),
+    buildCmd,
+    startCmd,
+    pkg: app.pkg,
+    hasNodeployConfig: app.appConfig !== null,
+  };
 }

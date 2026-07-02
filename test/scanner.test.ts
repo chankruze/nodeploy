@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { findApp, scanAppsDir } from "../src/lib/scanner.js";
+import { findApp, scanAppsDir, toDetectedApp } from "../src/lib/scanner.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = path.join(__dirname, "fixtures", "apps");
@@ -57,5 +57,30 @@ describe("findApp", () => {
 
   it("returns undefined when no app matches", () => {
     expect(findApp(FIXTURES_DIR, "does-not-exist")).toBeUndefined();
+  });
+});
+
+describe("toDetectedApp", () => {
+  it("resolves a fully detected app, preferring nodeploy.json name/port", () => {
+    const configured = findApp(FIXTURES_DIR, "custom-name");
+    if (!configured) throw new Error("fixture missing");
+
+    const detected = toDetectedApp(configured);
+
+    expect(detected.name).toBe("custom-name");
+    expect(detected.port).toBe(4000);
+    expect(detected.type).toBe("express");
+    expect(detected.hasNodeployConfig).toBe(true);
+  });
+
+  it("falls back to the directory name and undefined port without nodeploy.json", () => {
+    const express = findApp(FIXTURES_DIR, "express-app");
+    if (!express) throw new Error("fixture missing");
+
+    const detected = toDetectedApp(express);
+
+    expect(detected.name).toBe("express-app");
+    expect(detected.port).toBeUndefined();
+    expect(detected.hasNodeployConfig).toBe(false);
   });
 });
