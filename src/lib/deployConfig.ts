@@ -87,11 +87,6 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
     if (typeof proxyRaw.host !== "string" || proxyRaw.host.length === 0) {
       throw new Error("nodeploy.yml: \"proxy.host\" must be a non-empty string");
     }
-    if (typeof candidate.port !== "number") {
-      throw new Error(
-        "nodeploy.yml: \"port\" is required when \"proxy\" is set",
-      );
-    }
     proxy = { host: proxyRaw.host };
   }
 

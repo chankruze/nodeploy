@@ -133,7 +133,7 @@ ssh:
 #   host: inventory-api.local
 ```
 
-`service`, `repo`, `server`, and `ssh.user` are required. `port` is required if `proxy` is set.
+`service`, `repo`, `server`, and `ssh.user` are required. `port` is required when `proxy` is set on a Node process app (`nestjs`/`nextjs`/`express`/`generic`). Static apps (`vite`/`cra`) don't use `port` at all — they're served straight from disk by nginx — but still need `proxy.host` set, since that's the only way to reach a static app (there's no PM2 process, so there's no `<ip>:<port>` fallback for them).
 
 Since domain resolution for `.local`-style hosts isn't handled by nodeploy, after a deploy with `proxy` configured you'll need to point that hostname at the server yourself — e.g. add `<server-ip> inventory-api.local` to `/etc/hosts` on machines that need to reach it, or use real DNS if the server has a public IP and domain.
 
@@ -141,14 +141,18 @@ Since domain resolution for `.local`-style hosts isn't handled by nodeploy, afte
 
 Detection reads the remote `package.json`'s scripts and dependencies — no configuration needed.
 
-| Type | Scripts required | Dependency marker |
-|---|---|---|
-| NestJS | `build` + `start:prod` | `@nestjs/core` |
-| Next.js | `build` + `start` | `next` |
-| Vite | `build` + `preview` | `vite` |
-| Create React App | `build` + `serve` | `react-scripts` (or `react`) |
-| Express | `start` only, no `build` | none |
-| generic | anything else | — (runs `build` if present, then the first of `start`/`start:prod`/`serve`/`preview` that exists) |
+| Type | Scripts required | Dependency marker | Runtime |
+|---|---|---|---|
+| NestJS | `build` + `start:prod` | `@nestjs/core` | PM2 |
+| Next.js | `build` + `start` | `next` | PM2 |
+| Vite | `build` + `preview` | `vite` | **static** (nginx serves `dist/` directly) |
+| Create React App | `build` + `serve` | `react-scripts` (or `react`) | **static** (nginx serves `build/` directly) |
+| Express | `start` only, no `build` | none | PM2 |
+| generic | anything else | — (runs `build` if present, then the first of `start`/`start:prod`/`serve`/`preview` that exists) | PM2 |
+
+Vite and CRA produce a plain static bundle with no server process of their own — `vite preview`/`serve` are dev-only tools, not meant for production (Vite's own docs say so directly), so `nodeploy deploy` skips PM2 entirely for these two types and instead points nginx's `root` at the build output directory. This means `proxy.host` is **required** for these types (there's nothing else serving the app), but `port` is not used. NestJS/Next.js/Express/generic apps are unaffected and keep running under PM2 as before.
+
+Because there's no PM2 process for a static app, `restart`/`stop`/`logs` don't apply to it — `restart`/`deploy` again to republish, remove the nginx site config manually to take it down, and check nginx's own `/var/log/nginx/access.log`/`error.log` for logs. `nodeploy status` still works, checking for an enabled nginx site when there's no matching PM2 process.
 
 Package manager (`npm` vs `pnpm`) is chosen automatically based on whether the app has a `pnpm-lock.yaml` on the server.
 
@@ -173,8 +177,8 @@ Run every time you ship a change (after `setup` has run at least once):
 2. Clones the repo into `deploy_path` if it isn't there yet, otherwise fetches and hard-resets to `origin/<branch>`.
 3. Reads the remote `package.json` to detect the app type and resolve install/build/start commands.
 4. Installs dependencies and runs the build step (if any) on the server.
-5. Starts (or restarts, if already running) the app under PM2 as `service` (appending `start_args`, if set, to the start/preview script), then `pm2 save`s the process list so it's restored on reboot.
-6. If `proxy` is configured, writes an nginx server block proxying `proxy.host` to `port`, symlinks it into `sites-enabled`, and reloads nginx.
+5. For static app types (`vite`/`cra`), points nginx directly at the build output directory instead of starting anything under PM2 — no `port` involved. For every other type, starts (or restarts, if already running) the app under PM2 as `service` (appending `start_args`, if set, to the start/preview script), then `pm2 save`s the process list so it's restored on reboot.
+6. If `proxy` is configured (Node process apps only — static apps always write their nginx config in step 5), writes an nginx server block proxying `proxy.host` to `port`, symlinks it into `sites-enabled`, and reloads nginx.
 
 ## Architecture
 
@@ -182,9 +186,9 @@ Run every time you ship a change (after `setup` has run at least once):
 - `src/lib/remoteEnv.ts` — wraps remote commands to source nvm first, so `node`/`npm`/`pm2` resolve in a non-login SSH shell.
 - `src/lib/serverSetup.ts` — idempotent provisioning steps (git/nginx via apt, Node via nvm, PM2 via npm, PM2 boot startup, deploy path creation) used by `nodeploy setup`.
 - `src/lib/git.ts` — clones or fetches+resets the app's repo on the server over SSH.
-- `src/lib/nginx.ts` — generates an nginx server block and pipes it to the server via SSH (`sites-available` → `sites-enabled` → `nginx -t` → reload).
+- `src/lib/nginx.ts` — generates an nginx server block (reverse-proxy for PM2 apps, or static-file `root` for `vite`/`cra`) and pipes it to the server via SSH (`sites-available` → `sites-enabled` → `nginx -t` → reload).
 - `src/lib/deployConfig.ts` — loads and validates `nodeploy.yml` (YAML via the `yaml` package), applying defaults for `branch`/`deploy_path`/`ssh.port`/`node_version`.
-- `src/lib/detector.ts` — pluggable, ordered rule list for app-type detection from a `package.json`. Adding a new framework means adding a rule here.
+- `src/lib/detector.ts` — pluggable, ordered rule list for app-type detection from a `package.json`, plus `resolveStaticDir` mapping static-output app types (`vite`/`cra`) to their build directory. Adding a new framework means adding a rule here.
 - `src/lib/pm2.ts` — all process management goes through the `PM2Adapter` interface; `SSHPM2Adapter` runs `pm2` subcommands on the server via `sshExec`.
 - `src/lib/doctorChecks.ts` — individual environment health checks, run against the remote server over SSH.
 

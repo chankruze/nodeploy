@@ -119,16 +119,17 @@ describe("validateDeployConfig", () => {
     ).toThrow(/ssh.user/);
   });
 
-  it("throws when proxy is set without port", () => {
-    expect(() =>
-      validateDeployConfig({
-        service: "api",
-        repo: "git@github.com:user/api.git",
-        server: "1.2.3.4",
-        ssh: { user: "root" },
-        proxy: { host: "api.local" },
-      }),
-    ).toThrow(/port.*required/);
+  it("accepts proxy without port (required only for non-static apps, checked at deploy time)", () => {
+    const config = validateDeployConfig({
+      service: "api",
+      repo: "git@github.com:user/api.git",
+      server: "1.2.3.4",
+      ssh: { user: "root" },
+      proxy: { host: "api.local" },
+    });
+
+    expect(config.proxy).toEqual({ host: "api.local" });
+    expect(config.port).toBeUndefined();
   });
 
   it("throws on non-object input", () => {

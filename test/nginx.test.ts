@@ -5,7 +5,7 @@ const { execa } = vi.hoisted(() => ({ execa: vi.fn() }));
 
 vi.mock("execa", () => ({ execa }));
 
-const { buildServerBlock, deployProxyConfig } = await import(
+const { buildServerBlock, buildStaticServerBlock, deployProxyConfig, deployStaticProxyConfig } = await import(
   "../src/lib/nginx.js"
 );
 
@@ -15,6 +15,16 @@ describe("buildServerBlock", () => {
 
     expect(block).toContain("server_name api.local;");
     expect(block).toContain("proxy_pass http://127.0.0.1:3000;");
+  });
+});
+
+describe("buildStaticServerBlock", () => {
+  it("generates an nginx server block serving static files from the given root", () => {
+    const block = buildStaticServerBlock("app.local", "~/apps/app/dist");
+
+    expect(block).toContain("server_name app.local;");
+    expect(block).toContain("root ~/apps/app/dist;");
+    expect(block).toContain("try_files $uri $uri/ /index.html;");
   });
 });
 
@@ -47,5 +57,36 @@ describe("deployProxyConfig", () => {
     expect(remoteCommand).toContain("sudo systemctl reload nginx");
 
     expect(opts.input).toContain("server_name api.local;");
+  });
+});
+
+describe("deployStaticProxyConfig", () => {
+  const target: SSHTarget = { host: "1.2.3.4", user: "root", port: 22 };
+
+  beforeEach(() => {
+    execa.mockReset();
+  });
+
+  it("writes, enables, tests, and reloads nginx with a static server block as stdin", async () => {
+    execa.mockResolvedValueOnce({});
+
+    await deployStaticProxyConfig(
+      target,
+      "app",
+      "app.local",
+      "~/apps/app/dist",
+    );
+
+    expect(execa).toHaveBeenCalledTimes(1);
+    const [, args, opts] = execa.mock.calls[0];
+
+    const remoteCommand = args[args.length - 1] as string;
+    expect(remoteCommand).toContain(
+      'sudo tee "/etc/nginx/sites-available/app.conf"',
+    );
+    expect(remoteCommand).toContain("sudo nginx -t");
+    expect(remoteCommand).toContain("sudo systemctl reload nginx");
+
+    expect(opts.input).toContain("root ~/apps/app/dist;");
   });
 });

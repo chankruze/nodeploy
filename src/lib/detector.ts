@@ -65,6 +65,21 @@ export function detectAppType(pkg: PackageJson): AppType {
   return rule?.type ?? "generic";
 }
 
+/**
+ * Output directory of the production build for app types that produce a
+ * static bundle with no server process of their own. Types not listed here
+ * (nextjs, express, generic) need a running Node process, so they're always
+ * deployed under PM2 instead.
+ */
+const STATIC_OUTPUT_DIRS: Partial<Record<AppType, string>> = {
+  vite: "dist",
+  cra: "build",
+};
+
+export function resolveStaticDir(type: AppType): string | null {
+  return STATIC_OUTPUT_DIRS[type] ?? null;
+}
+
 const GENERIC_START_SCRIPT_CANDIDATES = [
   "start",
   "start:prod",

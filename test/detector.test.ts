@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectAppType, resolveCommands } from "../src/lib/detector.js";
+import { detectAppType, resolveCommands, resolveStaticDir } from "../src/lib/detector.js";
 import type { PackageJson } from "../src/types.js";
 
 function pkg(overrides: Partial<PackageJson>): PackageJson {
@@ -128,5 +128,22 @@ describe("resolveCommands", () => {
       buildCmd: null,
       startCmd: ["run", "start"],
     });
+  });
+});
+
+describe("resolveStaticDir", () => {
+  it("returns the build output dir for vite", () => {
+    expect(resolveStaticDir("vite")).toBe("dist");
+  });
+
+  it("returns the build output dir for cra", () => {
+    expect(resolveStaticDir("cra")).toBe("build");
+  });
+
+  it("returns null for app types that need a running process", () => {
+    expect(resolveStaticDir("nextjs")).toBeNull();
+    expect(resolveStaticDir("express")).toBeNull();
+    expect(resolveStaticDir("nestjs")).toBeNull();
+    expect(resolveStaticDir("generic")).toBeNull();
   });
 });

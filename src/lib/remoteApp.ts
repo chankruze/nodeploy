@@ -1,4 +1,4 @@
-import { detectAppType, resolveCommands } from "./detector.js";
+import { detectAppType, resolveCommands, resolveStaticDir } from "./detector.js";
 import { detectRemotePackageManager, resolveInstallCmd } from "./packageManager.js";
 import { sshExec } from "./ssh.js";
 import type { DeployConfig, PackageJson, RemoteApp, SSHTarget } from "../types.js";
@@ -29,5 +29,6 @@ export async function resolveRemoteApp(
     buildCmd,
     startCmd,
     startArgs: config.startArgs ?? [],
+    staticDir: resolveStaticDir(type),
   };
 }

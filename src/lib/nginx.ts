@@ -24,13 +24,26 @@ export function buildServerBlock(
 `;
 }
 
-export async function deployProxyConfig(
+export function buildStaticServerBlock(host: string, root: string): string {
+  return `server {
+    listen 80;
+    server_name ${host};
+
+    root ${root};
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+`;
+}
+
+async function writeAndReload(
   target: SSHTarget,
   service: string,
-  host: string,
-  port: number,
+  block: string,
 ): Promise<void> {
-  const block = buildServerBlock(service, host, port);
   const available = `/etc/nginx/sites-available/${service}.conf`;
   const enabled = `/etc/nginx/sites-enabled/${service}.conf`;
 
@@ -42,4 +55,34 @@ export async function deployProxyConfig(
   ].join(" && ");
 
   await sshExec(target, remoteCommand, { input: block });
+}
+
+export async function deployProxyConfig(
+  target: SSHTarget,
+  service: string,
+  host: string,
+  port: number,
+): Promise<void> {
+  await writeAndReload(target, service, buildServerBlock(service, host, port));
+}
+
+export async function deployStaticProxyConfig(
+  target: SSHTarget,
+  service: string,
+  host: string,
+  root: string,
+): Promise<void> {
+  await writeAndReload(target, service, buildStaticServerBlock(host, root));
+}
+
+export async function isStaticSiteEnabled(
+  target: SSHTarget,
+  service: string,
+): Promise<boolean> {
+  try {
+    await sshExec(target, `test -f "/etc/nginx/sites-enabled/${service}.conf"`);
+    return true;
+  } catch {
+    return false;
+  }
 }

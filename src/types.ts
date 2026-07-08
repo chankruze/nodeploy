@@ -57,6 +57,8 @@ export interface RemoteApp {
   buildCmd: string[] | null;
   startCmd: string[];
   startArgs: string[];
+  /** Build output dir to serve directly via nginx, or null to run under PM2. */
+  staticDir: string | null;
 }
 
 export type PM2Status =

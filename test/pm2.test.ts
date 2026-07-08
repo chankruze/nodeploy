@@ -24,6 +24,7 @@ function makeApp(overrides: Partial<RemoteApp> = {}): RemoteApp {
     buildCmd: null,
     startCmd: ["run", "start"],
     startArgs: [],
+    staticDir: null,
     ...overrides,
   };
 }
