@@ -52,6 +52,21 @@ describe("detectAppType", () => {
     expect(detectAppType(p)).toBe("express");
   });
 
+  it("detects remix", () => {
+    const p = pkg({
+      scripts: { build: "remix vite:build", start: "remix-serve ./build/server/index.js" },
+      dependencies: { "@remix-run/serve": "^2.0.0", "@remix-run/react": "^2.0.0" },
+    });
+    expect(detectAppType(p)).toBe("remix");
+  });
+
+  it("falls back to generic for a plain node start script with no framework dependency", () => {
+    const p = pkg({
+      scripts: { start: "node server.js" },
+    });
+    expect(detectAppType(p)).toBe("generic");
+  });
+
   it("falls back to generic when build+start scripts exist but no framework dependency", () => {
     const p = pkg({
       scripts: { build: "tsc", start: "node dist/index.js" },
@@ -81,6 +96,13 @@ describe("resolveCommands", () => {
 
   it("resolves nextjs commands", () => {
     expect(resolveCommands("nextjs", pkg({}))).toEqual({
+      buildCmd: ["run", "build"],
+      startCmd: ["run", "start"],
+    });
+  });
+
+  it("resolves remix commands", () => {
+    expect(resolveCommands("remix", pkg({}))).toEqual({
       buildCmd: ["run", "build"],
       startCmd: ["run", "start"],
     });
@@ -142,6 +164,7 @@ describe("resolveStaticDir", () => {
 
   it("returns null for app types that need a running process", () => {
     expect(resolveStaticDir("nextjs")).toBeNull();
+    expect(resolveStaticDir("remix")).toBeNull();
     expect(resolveStaticDir("express")).toBeNull();
     expect(resolveStaticDir("nestjs")).toBeNull();
     expect(resolveStaticDir("generic")).toBeNull();

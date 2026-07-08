@@ -133,7 +133,7 @@ ssh:
 #   host: inventory-api.internal
 ```
 
-`service`, `repo`, `server`, and `ssh.user` are required. `port` is required when `proxy` is set on a Node process app (`nestjs`/`nextjs`/`express`/`generic`). Static apps (`vite`/`cra`) don't use `port` at all — they're served straight from disk by nginx — but still need `proxy.host` set, since that's the only way to reach a static app (there's no PM2 process, so there's no `<ip>:<port>` fallback for them).
+`service`, `repo`, `server`, and `ssh.user` are required. `port` is required when `proxy` is set on a Node process app (`nestjs`/`nextjs`/`remix`/`express`/`generic`). Static apps (`vite`/`cra`) don't use `port` at all — they're served straight from disk by nginx — but still need `proxy.host` set, since that's the only way to reach a static app (there's no PM2 process, so there's no `<ip>:<port>` fallback for them).
 
 `proxy.host` can be anything — it's just the nginx `server_name`, resolved via a manual `/etc/hosts` entry (see below) or real DNS if the server has a public IP and domain. A natural pattern when running several apps on one server is `<app-name>.<hostname>`, e.g. `my-app.beepl-office-server-2`, or a shorter fake-TLD like `my-app.internal`/`my-app.lan`. **Avoid `.local`** — it's reserved for mDNS/Bonjour (RFC 6762), and macOS/Linux (avahi) will try multicast DNS resolution for that suffix first, which can make lookups slow or flaky, or ignore your `/etc/hosts` entry depending on `nsswitch.conf` ordering.
 
@@ -164,12 +164,13 @@ Detection reads the remote `package.json`'s scripts and dependencies — no conf
 |---|---|---|---|
 | NestJS | `build` + `start:prod` | `@nestjs/core` | PM2 |
 | Next.js | `build` + `start` | `next` | PM2 |
+| Remix | `build` + `start` | `@remix-run/serve`, `@remix-run/node`, or `@remix-run/react` | PM2 |
 | Vite | `build` + `preview` | `vite` | **static** (nginx serves `dist/` directly) |
 | Create React App | `build` + `serve` | `react-scripts` (or `react`) | **static** (nginx serves `build/` directly) |
-| Express | `start` only, no `build` | none | PM2 |
+| Express | `start` only, no `build` | `express` | PM2 |
 | generic | anything else | — (runs `build` if present, then the first of `start`/`start:prod`/`serve`/`preview` that exists) | PM2 |
 
-Vite and CRA produce a plain static bundle with no server process of their own — `vite preview`/`serve` are dev-only tools, not meant for production (Vite's own docs say so directly), so `nodeploy deploy` skips PM2 entirely for these two types and instead points nginx's `root` at the build output directory. This means `proxy.host` is **required** for these types (there's nothing else serving the app), but `port` is not used. NestJS/Next.js/Express/generic apps are unaffected and keep running under PM2 as before.
+Vite and CRA produce a plain static bundle with no server process of their own — `vite preview`/`serve` are dev-only tools, not meant for production (Vite's own docs say so directly), so `nodeploy deploy` skips PM2 entirely for these two types and instead points nginx's `root` at the build output directory. This means `proxy.host` is **required** for these types (there's nothing else serving the app), but `port` is not used. NestJS/Next.js/Remix/Express/generic apps all run a real Node server process and stay on PM2, which is what gives them restart-on-crash, restart-on-reboot (`pm2 startup`/`pm2 save`), and `logs`/`status`.
 
 Because there's no PM2 process for a static app, `restart`/`stop`/`logs` don't apply to it — `restart`/`deploy` again to republish, remove the nginx site config manually to take it down, and check nginx's own `/var/log/nginx/access.log`/`error.log` for logs. `nodeploy status` still works, checking for an enabled nginx site when there's no matching PM2 process.
 

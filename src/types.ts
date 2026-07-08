@@ -2,6 +2,7 @@ export type AppType =
   | "express"
   | "nestjs"
   | "nextjs"
+  | "remix"
   | "cra"
   | "vite"
   | "generic";

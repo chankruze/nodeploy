@@ -40,6 +40,15 @@ export const detectionRules: DetectionRule[] = [
       hasDependency(pkg, "next"),
   },
   {
+    type: "remix",
+    matches: ({ pkg }) =>
+      hasScript(pkg, "build") &&
+      hasScript(pkg, "start") &&
+      (hasDependency(pkg, "@remix-run/serve") ||
+        hasDependency(pkg, "@remix-run/node") ||
+        hasDependency(pkg, "@remix-run/react")),
+  },
+  {
     type: "vite",
     matches: ({ pkg }) =>
       hasScript(pkg, "build") &&
@@ -55,7 +64,10 @@ export const detectionRules: DetectionRule[] = [
   },
   {
     type: "express",
-    matches: ({ pkg }) => hasScript(pkg, "start") && !hasScript(pkg, "build"),
+    matches: ({ pkg }) =>
+      hasScript(pkg, "start") &&
+      !hasScript(pkg, "build") &&
+      hasDependency(pkg, "express"),
   },
 ];
 
@@ -68,8 +80,8 @@ export function detectAppType(pkg: PackageJson): AppType {
 /**
  * Output directory of the production build for app types that produce a
  * static bundle with no server process of their own. Types not listed here
- * (nextjs, express, generic) need a running Node process, so they're always
- * deployed under PM2 instead.
+ * (nextjs, remix, express, generic) need a running Node process, so they're
+ * always deployed under PM2 instead.
  */
 const STATIC_OUTPUT_DIRS: Partial<Record<AppType, string>> = {
   vite: "dist",
@@ -95,6 +107,8 @@ export function resolveCommands(
     case "nestjs":
       return { buildCmd: ["run", "build"], startCmd: ["run", "start:prod"] };
     case "nextjs":
+      return { buildCmd: ["run", "build"], startCmd: ["run", "start"] };
+    case "remix":
       return { buildCmd: ["run", "build"], startCmd: ["run", "start"] };
     case "vite":
       return { buildCmd: ["run", "build"], startCmd: ["run", "preview"] };
