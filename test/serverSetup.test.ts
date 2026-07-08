@@ -5,8 +5,14 @@ const { execa } = vi.hoisted(() => ({ execa: vi.fn() }));
 
 vi.mock("execa", () => ({ execa }));
 
-const { ensureDeployPath, ensureGit, ensureNginx, ensureNode, ensurePM2 } =
-  await import("../src/lib/serverSetup.js");
+const {
+  ensureDeployPath,
+  ensureGit,
+  ensureNginx,
+  ensureNode,
+  ensurePM2,
+  ensurePM2Startup,
+} = await import("../src/lib/serverSetup.js");
 
 const target: SSHTarget = {
   host: "203.0.113.10",
@@ -44,40 +50,68 @@ describe("serverSetup", () => {
     );
   });
 
-  it("ensureNode installs via the configured NodeSource release line when missing", async () => {
-    execa.mockRejectedValueOnce(new Error("not found"));
-    execa.mockResolvedValueOnce({});
+  it("ensureNode installs nvm and the requested version when node is missing", async () => {
+    execa.mockRejectedValueOnce(new Error("not found")); // command -v node
+    execa.mockRejectedValueOnce(new Error("not found")); // command -v nvm
+    execa.mockResolvedValueOnce({}); // nvm install script
+    execa.mockResolvedValueOnce({}); // nvm install <version>
     const installed = await ensureNode(target, "22");
     expect(installed).toBe(true);
-    const [, args, opts] = execa.mock.calls[1];
-    expect(args[args.length - 1]).toContain("setup_22.x");
-    expect(opts).toEqual({ stdio: "inherit" });
+
+    const [, installScriptArgs, installScriptOpts] = execa.mock.calls[2];
+    expect(installScriptArgs[installScriptArgs.length - 1]).toContain(
+      "nvm-sh/nvm",
+    );
+    expect(installScriptOpts).toEqual({ stdio: "inherit" });
+
+    const [, nvmInstallArgs] = execa.mock.calls[3];
+    const command = nvmInstallArgs[nvmInstallArgs.length - 1] as string;
+    expect(command).toContain("nvm install 22");
+    expect(command).toContain("nvm alias default 22");
   });
 
-  it("ensureNode skips install when node is already present", async () => {
+  it("ensureNode skips the nvm install script when nvm is already present", async () => {
+    execa.mockRejectedValueOnce(new Error("not found")); // command -v node
+    execa.mockResolvedValueOnce({}); // command -v nvm
+    execa.mockResolvedValueOnce({}); // nvm install <version>
+    const installed = await ensureNode(target, "22");
+    expect(installed).toBe(true);
+    expect(execa).toHaveBeenCalledTimes(3);
+  });
+
+  it("ensureNode skips entirely when node is already present", async () => {
     execa.mockResolvedValueOnce({});
     const installed = await ensureNode(target, "22");
     expect(installed).toBe(false);
     expect(execa).toHaveBeenCalledTimes(1);
   });
 
-  it("ensurePM2 installs pm2 when missing and always runs pm2 startup", async () => {
+  it("ensurePM2 installs pm2 via npm (no sudo) when missing", async () => {
     execa.mockRejectedValueOnce(new Error("not found")); // command -v pm2
     execa.mockResolvedValueOnce({}); // npm install -g pm2
-    execa.mockResolvedValueOnce({}); // pm2 startup
     const installed = await ensurePM2(target);
     expect(installed).toBe(true);
-    expect(execa).toHaveBeenCalledTimes(3);
-    const [, args] = execa.mock.calls[2];
+    const [, args] = execa.mock.calls[1];
+    expect(args[args.length - 1]).toContain("npm install -g pm2");
+  });
+
+  it("ensurePM2 skips install when pm2 is already present", async () => {
+    execa.mockResolvedValueOnce({});
+    const installed = await ensurePM2(target);
+    expect(installed).toBe(false);
+    expect(execa).toHaveBeenCalledTimes(1);
+  });
+
+  it("ensurePM2Startup runs pm2 startup systemd", async () => {
+    execa.mockResolvedValueOnce({});
+    await ensurePM2Startup(target);
+    const [, args] = execa.mock.calls[0];
     expect(args[args.length - 1]).toContain("pm2 startup systemd");
   });
 
-  it("ensurePM2 still runs pm2 startup when pm2 is already present", async () => {
-    execa.mockResolvedValueOnce({}); // command -v pm2
-    execa.mockResolvedValueOnce({}); // pm2 startup
-    const installed = await ensurePM2(target);
-    expect(installed).toBe(false);
-    expect(execa).toHaveBeenCalledTimes(2);
+  it("ensurePM2Startup propagates failure when sudo is unavailable", async () => {
+    execa.mockRejectedValueOnce(new Error("sudo: a password is required"));
+    await expect(ensurePM2Startup(target)).rejects.toThrow();
   });
 
   it("ensureNginx installs and enables nginx when missing", async () => {

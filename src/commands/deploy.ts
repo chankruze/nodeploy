@@ -6,6 +6,7 @@ import { fail, info, success } from "../lib/logger.js";
 import { deployProxyConfig } from "../lib/nginx.js";
 import { createPM2Adapter } from "../lib/pm2.js";
 import { resolveRemoteApp } from "../lib/remoteApp.js";
+import { withNvm } from "../lib/remoteEnv.js";
 import { sshExec, sshTest } from "../lib/ssh.js";
 
 export function registerDeployCommand(program: Command): void {
@@ -36,7 +37,7 @@ export function registerDeployCommand(program: Command): void {
       info(`  Installing dependencies (${app.installCmd.join(" ")})...`);
       await sshExec(
         target,
-        `cd "${app.dir}" && ${app.installCmd.join(" ")}`,
+        withNvm(`cd "${app.dir}" && ${app.installCmd.join(" ")}`),
         { stdio: "inherit" },
       );
 
@@ -44,7 +45,9 @@ export function registerDeployCommand(program: Command): void {
         info(`  Building (${app.packageManager} ${app.buildCmd.join(" ")})...`);
         await sshExec(
           target,
-          `cd "${app.dir}" && ${app.packageManager} ${app.buildCmd.join(" ")}`,
+          withNvm(
+            `cd "${app.dir}" && ${app.packageManager} ${app.buildCmd.join(" ")}`,
+          ),
           { stdio: "inherit" },
         );
       }

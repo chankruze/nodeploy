@@ -6,6 +6,7 @@ const { execa } = vi.hoisted(() => ({ execa: vi.fn() }));
 vi.mock("execa", () => ({ execa }));
 
 const { SSHPM2Adapter } = await import("../src/lib/pm2.js");
+const { withNvm } = await import("../src/lib/remoteEnv.js");
 
 const target: SSHTarget = {
   host: "203.0.113.10",
@@ -56,7 +57,7 @@ describe("SSHPM2Adapter", () => {
     expect(execa).toHaveBeenNthCalledWith(
       1,
       "ssh",
-      ["-p", "22", "root@203.0.113.10", "pm2 jlist"],
+      ["-p", "22", "root@203.0.113.10", withNvm("pm2 jlist")],
       {},
     );
     expect(execa).toHaveBeenNthCalledWith(
@@ -66,14 +67,14 @@ describe("SSHPM2Adapter", () => {
         "-p",
         "22",
         "root@203.0.113.10",
-        'cd "~/apps/api" && pm2 start npm --name "api" -- run start:prod',
+        withNvm('cd "~/apps/api" && pm2 start npm --name "api" -- run start:prod'),
       ],
       {},
     );
     expect(execa).toHaveBeenNthCalledWith(
       3,
       "ssh",
-      ["-p", "22", "root@203.0.113.10", "pm2 save"],
+      ["-p", "22", "root@203.0.113.10", withNvm("pm2 save")],
       {},
     );
   });
@@ -91,13 +92,13 @@ describe("SSHPM2Adapter", () => {
     expect(execa).toHaveBeenNthCalledWith(
       2,
       "ssh",
-      ["-p", "22", "root@203.0.113.10", 'pm2 restart "api"'],
+      ["-p", "22", "root@203.0.113.10", withNvm('pm2 restart "api"')],
       {},
     );
     expect(execa).toHaveBeenNthCalledWith(
       3,
       "ssh",
-      ["-p", "22", "root@203.0.113.10", "pm2 save"],
+      ["-p", "22", "root@203.0.113.10", withNvm("pm2 save")],
       {},
     );
   });
@@ -107,7 +108,7 @@ describe("SSHPM2Adapter", () => {
     await new SSHPM2Adapter(target).restart("api");
     expect(execa).toHaveBeenCalledWith(
       "ssh",
-      ["-p", "22", "root@203.0.113.10", 'pm2 restart "api"'],
+      ["-p", "22", "root@203.0.113.10", withNvm('pm2 restart "api"')],
       {},
     );
   });
@@ -117,7 +118,7 @@ describe("SSHPM2Adapter", () => {
     await new SSHPM2Adapter(target).stop("api");
     expect(execa).toHaveBeenCalledWith(
       "ssh",
-      ["-p", "22", "root@203.0.113.10", 'pm2 stop "api"'],
+      ["-p", "22", "root@203.0.113.10", withNvm('pm2 stop "api"')],
       {},
     );
   });
@@ -127,7 +128,7 @@ describe("SSHPM2Adapter", () => {
     await new SSHPM2Adapter(target).delete("api");
     expect(execa).toHaveBeenCalledWith(
       "ssh",
-      ["-p", "22", "root@203.0.113.10", 'pm2 delete "api"'],
+      ["-p", "22", "root@203.0.113.10", withNvm('pm2 delete "api"')],
       {},
     );
   });
@@ -169,7 +170,12 @@ describe("SSHPM2Adapter", () => {
 
     expect(execa).toHaveBeenCalledWith(
       "ssh",
-      ["-p", "22", "root@203.0.113.10", 'pm2 logs "api" --lines 50'],
+      [
+        "-p",
+        "22",
+        "root@203.0.113.10",
+        withNvm('pm2 logs "api" --lines 50'),
+      ],
       { stdio: "inherit" },
     );
   });
@@ -189,7 +195,7 @@ describe("SSHPM2Adapter", () => {
     await new SSHPM2Adapter(target).save();
     expect(execa).toHaveBeenCalledWith(
       "ssh",
-      ["-p", "22", "root@203.0.113.10", "pm2 save"],
+      ["-p", "22", "root@203.0.113.10", withNvm("pm2 save")],
       {},
     );
   });

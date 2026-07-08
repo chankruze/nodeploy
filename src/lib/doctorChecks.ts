@@ -1,3 +1,4 @@
+import { withNvm } from "./remoteEnv.js";
 import { sshExec, sshTest } from "./ssh.js";
 import type { DeployConfig, DoctorCheckResult, SSHTarget } from "../types.js";
 
@@ -21,7 +22,7 @@ async function checkRemoteBinary(
   opts: { optional?: boolean; hint?: string } = {},
 ): Promise<DoctorCheckResult> {
   try {
-    const { stdout } = await sshExec(target, `${name} ${versionArgs}`);
+    const { stdout } = await sshExec(target, withNvm(`${name} ${versionArgs}`));
     return { name, ok: true, message: stdout.trim() };
   } catch {
     return {
@@ -130,7 +131,7 @@ export async function checkPasswordlessSudo(
       name: "sudo",
       ok: false,
       message:
-        "passwordless sudo not available — required to write nginx config for `proxy`",
+        "passwordless sudo not available — required by `nodeploy setup` to install packages, and by `proxy` to write nginx config",
     };
   }
 }
@@ -153,11 +154,8 @@ export async function runAllChecks(
     checkDiskSpace(target),
     checkMemory(target),
     checkDeployPathWritable(target, config.deployPath),
+    checkPasswordlessSudo(target),
   ];
-
-  if (config.proxy) {
-    checks.push(checkPasswordlessSudo(target));
-  }
 
   return [connection, ...(await Promise.all(checks))];
 }

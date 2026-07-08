@@ -28,7 +28,7 @@ ssh:
 
 # deploy_path: ~/apps/my-app
 
-# NodeSource release line to install if node is missing on the server (used by nodeploy setup).
+# nvm version/alias to install if node is missing on the server (used by nodeploy setup).
 # node_version: 22
 
 # Uncomment to front the app with an nginx reverse proxy.

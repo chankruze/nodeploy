@@ -101,7 +101,7 @@ describe("doctorChecks", () => {
     expect(results[0].ok).toBe(false);
   });
 
-  it("runAllChecks includes a sudo check only when proxy is configured", async () => {
+  it("runAllChecks always includes a sudo check", async () => {
     execa.mockResolvedValue({ stdout: "ok" });
     const results = await runAllChecks(
       makeConfig({ proxy: { host: "api.local" }, port: 3000 }),
@@ -110,9 +110,9 @@ describe("doctorChecks", () => {
     expect(results.some((r) => r.name === "sudo")).toBe(true);
   });
 
-  it("runAllChecks omits the sudo check when proxy is not configured", async () => {
+  it("runAllChecks includes a sudo check even without proxy configured", async () => {
     execa.mockResolvedValue({ stdout: "ok" });
     const results = await runAllChecks(makeConfig(), target);
-    expect(results.some((r) => r.name === "sudo")).toBe(false);
+    expect(results.some((r) => r.name === "sudo")).toBe(true);
   });
 });

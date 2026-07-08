@@ -25,7 +25,8 @@ The built CLI is at `dist/cli.js` (bin name `nodeploy`). Link it locally with `p
 ## Prerequisites
 
 - A fresh Ubuntu LTS server (24.04/26.04) reachable over SSH. `nodeploy setup` provisions everything else below — you don't need to install git/Node/PM2/nginx by hand.
-- Key-based SSH access from your machine to the target server (`ssh user@server` should work without a password prompt), and that user must be able to run `sudo` without a password (needed by `setup` to install packages and by the nginx proxy step).
+- Key-based SSH access from your machine to the target server (`ssh user@server` should work without a password prompt).
+- Passwordless `sudo` for the SSH user is only needed for `git`/`nginx` install (via `apt`) and registering PM2 to start on boot (`pm2 startup`). Node.js and PM2 itself install into the user's home directory via [nvm](https://github.com/nvm-sh/nvm) and don't need `sudo` at all — if your account can't get passwordless sudo (e.g. a restricted SSH tunnel user), `setup` still gets the app running, it just warns and skips the sudo-only steps.
 - The server needs outbound access to your git remote to clone/pull the repo (e.g. via a deploy key for private repos).
 
 Run `nodeploy doctor` to check all of the above.
@@ -69,7 +70,7 @@ ssh:
 
 # deploy_path: ~/apps/inventory-api          # optional, default ~/apps/<service>
 
-# node_version: 22                            # optional, default "22" — NodeSource release line
+# node_version: 22                            # optional, default "22" — nvm version/alias
                                               # `nodeploy setup` installs if node is missing
 
 # port and proxy are optional — set both together to front the app with nginx
@@ -102,10 +103,10 @@ Package manager (`npm` vs `pnpm`) is chosen automatically based on whether the a
 Run once per app per server, before the first deploy (safe to re-run — every step checks first and skips if already satisfied):
 
 1. Checks the SSH connection to `server`.
-2. Installs `git` via `apt` if missing.
-3. Installs Node.js via the [NodeSource](https://github.com/nodesource/distributions) `node_version` release line (default `22`) if `node` isn't already on the server's `PATH`.
-4. Installs PM2 globally (`npm install -g pm2`) if missing, then runs `pm2 startup systemd` so PM2-managed apps survive a server reboot.
-5. If `proxy` is configured in `nodeploy.yml`, installs and starts `nginx` via `apt`.
+2. Installs `git` via `apt` if missing. **Requires passwordless sudo** — if unavailable, warns and continues (install `git` manually, then re-run `setup`).
+3. Installs [nvm](https://github.com/nvm-sh/nvm) (if needed) and Node.js via `nvm install <node_version>` (default `22`) if `node` isn't already on the server's `PATH`. This installs into the SSH user's home directory — **no sudo required**.
+4. Installs PM2 globally via `npm install -g pm2` if missing (also no sudo — nvm's npm installs into the nvm-managed Node's own directory), then tries to register it with `pm2 startup systemd` so PM2-managed apps survive a server reboot. **The `pm2 startup` step requires passwordless sudo**; if unavailable, warns and continues — the app still runs, it just won't come back automatically after a reboot until you fix sudo access and re-run `setup`.
+5. If `proxy` is configured in `nodeploy.yml`, installs and starts `nginx` via `apt`. **Requires passwordless sudo**; warns and continues if unavailable.
 6. Creates `deploy_path` if it doesn't exist yet.
 
 This targets Ubuntu/Debian (`apt`, `systemd`) — tested against Ubuntu LTS. Other distros aren't supported by `setup` yet; install prerequisites manually and `nodeploy doctor`/`deploy` will still work.
@@ -124,7 +125,8 @@ Run every time you ship a change (after `setup` has run at least once):
 ## Architecture
 
 - `src/lib/ssh.ts` — the seam everything else is built on: shells out to the system `ssh` binary via `execa` to run a remote command or test connectivity.
-- `src/lib/serverSetup.ts` — idempotent provisioning steps (git/Node/PM2/nginx install, PM2 boot startup, deploy path creation) used by `nodeploy setup`.
+- `src/lib/remoteEnv.ts` — wraps remote commands to source nvm first, so `node`/`npm`/`pm2` resolve in a non-login SSH shell.
+- `src/lib/serverSetup.ts` — idempotent provisioning steps (git/nginx via apt, Node via nvm, PM2 via npm, PM2 boot startup, deploy path creation) used by `nodeploy setup`.
 - `src/lib/git.ts` — clones or fetches+resets the app's repo on the server over SSH.
 - `src/lib/nginx.ts` — generates an nginx server block and pipes it to the server via SSH (`sites-available` → `sites-enabled` → `nginx -t` → reload).
 - `src/lib/deployConfig.ts` — loads and validates `nodeploy.yml` (YAML via the `yaml` package), applying defaults for `branch`/`deploy_path`/`ssh.port`/`node_version`.
@@ -141,9 +143,9 @@ pnpm test        # vitest
 pnpm typecheck   # tsc --noEmit
 ```
 
-Unit-tested with mocked `execa` calls: app-type detection, package manager detection, `nodeploy.yml` loading/validation, SSH argument building, the git clone/pull command, the nginx server-block template and remote deploy command, the PM2 adapter (argument shapes, status mapping, mocked success/failure), server provisioning steps (git/Node/PM2/nginx install checks), and doctor checks.
+Unit-tested with mocked `execa` calls: app-type detection, package manager detection, `nodeploy.yml` loading/validation, SSH argument building, the git clone/pull command, the nginx server-block template and remote deploy command, the PM2 adapter (argument shapes, status mapping, mocked success/failure), server provisioning steps (git/nvm-Node/PM2/nginx install checks), and doctor checks.
 
-**Not unit tested** (requires a real server): actual `apt`/NodeSource/PM2 installs, `pm2 start` process lifecycle, real `git`/`npm`/`pnpm install`/build execution, nginx reload behavior, and full command flows end-to-end. Verify these manually against a toy app and a real VPS:
+**Not unit tested** (requires a real server): actual `apt`/nvm/PM2 installs, `pm2 start` process lifecycle, real `git`/`npm`/`pnpm install`/build execution, nginx reload behavior, and full command flows end-to-end. Verify these manually against a toy app and a real VPS:
 
 ```sh
 cd my-test-app
