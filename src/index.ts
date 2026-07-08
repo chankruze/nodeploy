@@ -1,7 +1,7 @@
 import { Command } from "commander";
 import { registerInitCommand } from "./commands/init.js";
 import { registerDeployCommand } from "./commands/deploy.js";
-import { registerListCommand } from "./commands/list.js";
+import { registerStatusCommand } from "./commands/status.js";
 import { registerRestartCommand } from "./commands/restart.js";
 import { registerStopCommand } from "./commands/stop.js";
 import { registerLogsCommand } from "./commands/logs.js";
@@ -17,7 +17,7 @@ export function createProgram(): Command {
 
   registerInitCommand(program);
   registerDeployCommand(program);
-  registerListCommand(program);
+  registerStatusCommand(program);
   registerRestartCommand(program);
   registerStopCommand(program);
   registerLogsCommand(program);

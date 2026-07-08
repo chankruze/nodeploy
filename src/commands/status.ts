@@ -1,8 +1,8 @@
 import type { Command } from "commander";
-import { loadGlobalConfig } from "../lib/config.js";
-import { info, printTable, warn } from "../lib/logger.js";
+import { DEPLOY_CONFIG_FILENAME } from "../constants.js";
+import { loadDeployConfig, toSSHTarget } from "../lib/deployConfig.js";
+import { info, warn } from "../lib/logger.js";
 import { createPM2Adapter } from "../lib/pm2.js";
-import { scanAppsDir, toDetectedApp } from "../lib/scanner.js";
 import type { PM2ProcessInfo } from "../types.js";
 
 const STATUS_ICONS: Record<PM2ProcessInfo["status"], string> = {
@@ -14,45 +14,25 @@ const STATUS_ICONS: Record<PM2ProcessInfo["status"], string> = {
   unknown: "⚪ unknown",
 };
 
-export function registerListCommand(program: Command): void {
+export function registerStatusCommand(program: Command): void {
   program
-    .command("list")
-    .description("List detected apps and their status")
+    .command("status")
+    .description("Show the deployed status of the app in the current directory")
     .action(async () => {
-      const config = loadGlobalConfig();
-      const { apps, warnings } = scanAppsDir(config.appsDir);
+      const config = loadDeployConfig(process.cwd(), DEPLOY_CONFIG_FILENAME);
+      const target = toSSHTarget(config);
 
-      for (const message of warnings) {
-        warn(message);
-      }
-
-      if (apps.length === 0) {
-        info(`No apps found in ${config.appsDir}`);
+      let processes: PM2ProcessInfo[] = [];
+      try {
+        processes = await createPM2Adapter(target).list();
+      } catch {
+        warn("Could not reach PM2 on the server");
         return;
       }
 
-      let pm2Processes: PM2ProcessInfo[] = [];
-      try {
-        pm2Processes = await createPM2Adapter().list();
-      } catch {
-        warn("Could not reach PM2 — showing apps without live status");
-      }
+      const process_ = processes.find((p) => p.name === config.service);
+      const status = process_ ? STATUS_ICONS[process_.status] : "not deployed";
 
-      const rows = apps
-        .map(toDetectedApp)
-        .map((app) => {
-          const process = pm2Processes.find((p) => p.name === app.name);
-          const status = process
-            ? STATUS_ICONS[process.status]
-            : "not deployed";
-          return [
-            app.name,
-            app.port !== undefined ? String(app.port) : "-",
-            app.type,
-            status,
-          ];
-        });
-
-      printTable(rows, ["NAME", "PORT", "TYPE", "STATUS"]);
+      info(`${config.service}: ${status}`);
     });
 }
