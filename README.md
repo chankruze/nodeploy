@@ -56,30 +56,22 @@ sudo chmod 440 /etc/sudoers.d/youruser
 
 ### Setting up a deploy key for a private repo
 
-`nodeploy deploy` clones/pulls `repo` *from the server*, not from your machine — so it's the server's SSH identity that needs access to the repo, not yours. If you see `Host key verification failed` or `Permission denied (publickey)` during the sync step, the server either doesn't trust GitHub's host key yet or has no key registered with it. Fix both from a shell on the server itself:
+`nodeploy deploy` clones/pulls `repo` *from the server*, not from your machine — so it's the server's SSH identity that needs access to the repo, not yours. `nodeploy setup` handles this automatically: it generates a dedicated ed25519 deploy key per app (`$HOME/.ssh/<service>_deploy_key` on the server), trusts the repo host's SSH key (`ssh-keyscan`), and prints the public key to add on GitHub:
 
-```sh
-# 1. Trust GitHub's host key (first-ever SSH connection to github.com from this server)
-mkdir -p ~/.ssh && chmod 700 ~/.ssh
-ssh-keyscan -H github.com >> ~/.ssh/known_hosts
-
-# 2. Generate a dedicated deploy keypair (don't reuse the key you use to SSH into the server)
-ssh-keygen -t ed25519 -C "<service>-deploy-key" -f ~/.ssh/<service>_deploy_key -N ""
-cat ~/.ssh/<service>_deploy_key.pub
+```
+$ nodeploy setup
+...
+Checking deploy key for github.com...
+Generated a new deploy key for my-app
+Add this as a read-only Deploy key on the repo (Settings → Deploy keys):
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5... my-app-deploy-key
 ```
 
-Add the printed public key as a **Deploy key** on the GitHub repo (Settings → Deploy keys → Add deploy key) — read-only access is enough since `nodeploy` only clones/pulls. Then point the server's SSH at it, since `git@github.com` otherwise only tries default keys like `~/.ssh/id_*`:
+Copy that line to the repo's **Settings → Deploy keys → Add deploy key** on GitHub — read-only access is enough, since `nodeploy` only clones/pulls. Re-running `setup` reuses the same key instead of generating a new one, so it's safe to run again if you missed adding it the first time.
 
-```sh
-cat >> ~/.ssh/config <<'EOF'
-Host github.com
-  IdentityFile ~/.ssh/<service>_deploy_key
-  IdentitiesOnly yes
-EOF
-chmod 600 ~/.ssh/config
-```
+Because the key is scoped per-`service` (not shared across the whole server), multiple private repos — even across different GitHub orgs/users — can be deployed to the same VPS without their deploy keys colliding; `nodeploy deploy` routes each app's git operations through its own key via `GIT_SSH_COMMAND`, so there's no shared `~/.ssh/config` entry to manage by hand.
 
-Verify with `ssh -T git@github.com` from the server — it should greet you with the repo name instead of erroring. Once that works, `nodeploy deploy` will be able to clone/pull.
+If you ever need to do this manually (e.g. debugging), the key nodeploy generates lives at `$HOME/.ssh/<service>_deploy_key.pub` on the server — `cat` it directly, or verify access with `ssh -i $HOME/.ssh/<service>_deploy_key -T git@<host>`.
 
 ## Quick start
 

@@ -48,6 +48,7 @@ export function registerDeployCommand(program: Command): void {
         repo: config.repo,
         branch: config.branch,
         deployPath: config.deployPath,
+        service: config.service,
       });
 
       const app = await resolveRemoteApp(target, config);

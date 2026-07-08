@@ -21,6 +21,7 @@ describe("ensureRepo", () => {
       repo: "git@github.com:user/api.git",
       branch: "main",
       deployPath: "~/apps/api",
+      service: "api",
     });
 
     expect(execa).toHaveBeenCalledWith(
@@ -42,6 +43,7 @@ describe("ensureRepo", () => {
       repo: "git@github.com:user/api.git",
       branch: "develop",
       deployPath: "~/apps/api",
+      service: "api",
     });
 
     const [, args] = execa.mock.calls[0];
@@ -51,5 +53,39 @@ describe("ensureRepo", () => {
     expect(remoteCommand).toContain(
       'git clone --branch "develop" "git@github.com:user/api.git" "~/apps/api"',
     );
+  });
+
+  it("exports GIT_SSH_COMMAND pointing at the service's deploy key for an SSH repo URL", async () => {
+    execa.mockResolvedValueOnce({});
+
+    await ensureRepo(target, {
+      repo: "git@github.com:user/api.git",
+      branch: "main",
+      deployPath: "~/apps/api",
+      service: "api",
+    });
+
+    const [, args] = execa.mock.calls[0];
+    const remoteCommand = args[args.length - 1] as string;
+
+    expect(remoteCommand).toContain("export GIT_SSH_COMMAND=");
+    expect(remoteCommand).toContain("api_deploy_key");
+    expect(remoteCommand).toContain("IdentitiesOnly=yes");
+  });
+
+  it("does not export GIT_SSH_COMMAND for a non-SSH repo URL", async () => {
+    execa.mockResolvedValueOnce({});
+
+    await ensureRepo(target, {
+      repo: "https://github.com/user/api.git",
+      branch: "main",
+      deployPath: "~/apps/api",
+      service: "api",
+    });
+
+    const [, args] = execa.mock.calls[0];
+    const remoteCommand = args[args.length - 1] as string;
+
+    expect(remoteCommand).not.toContain("GIT_SSH_COMMAND");
   });
 });

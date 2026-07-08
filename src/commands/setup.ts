@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import { DEPLOY_CONFIG_FILENAME } from "../constants.js";
 import { loadDeployConfig, toSSHTarget } from "../lib/deployConfig.js";
+import { ensureDeployKey, parseGitSSHHost } from "../lib/deployKey.js";
 import { fail, info, success, warn } from "../lib/logger.js";
 import {
   ensureDeployPath,
@@ -20,7 +21,7 @@ export function registerSetupCommand(program: Command): void {
   program
     .command("setup")
     .description(
-      "Provision the server for this app once: git, Node.js, PM2, and nginx (if proxy is configured)",
+      "Provision the server for this app once: git, Node.js, PM2, nginx (if proxy is configured), and a deploy key",
     )
     .action(async () => {
       const config = loadDeployConfig(process.cwd(), DEPLOY_CONFIG_FILENAME);
@@ -76,6 +77,23 @@ export function registerSetupCommand(program: Command): void {
             `  Could not install nginx — requires passwordless sudo. \`proxy\` won't work until this is fixed. (${errorMessage(error)})`,
           );
         }
+      }
+
+      const gitHost = parseGitSSHHost(config.repo);
+      if (gitHost) {
+        info(`  Checking deploy key for ${gitHost}...`);
+        const { publicKey, created } = await ensureDeployKey(
+          target,
+          config.service,
+          gitHost,
+        );
+        if (created) {
+          success(`  Generated a new deploy key for ${config.service}`);
+        } else {
+          info(`  Deploy key for ${config.service} already exists`);
+        }
+        info(`  Add this as a read-only Deploy key on the repo (Settings → Deploy keys):`);
+        info(`  ${publicKey}`);
       }
 
       info(`  Preparing ${config.deployPath}...`);
