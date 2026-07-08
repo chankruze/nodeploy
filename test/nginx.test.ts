@@ -68,7 +68,7 @@ describe("deployStaticProxyConfig", () => {
   });
 
   it("writes, enables, tests, and reloads nginx with a static server block as stdin", async () => {
-    execa.mockResolvedValueOnce({});
+    execa.mockResolvedValueOnce({}).mockResolvedValueOnce({});
 
     await deployStaticProxyConfig(
       target,
@@ -77,8 +77,8 @@ describe("deployStaticProxyConfig", () => {
       "~/apps/app/dist",
     );
 
-    expect(execa).toHaveBeenCalledTimes(1);
-    const [, args, opts] = execa.mock.calls[0];
+    expect(execa).toHaveBeenCalledTimes(2);
+    const [, args, opts] = execa.mock.calls[1];
 
     const remoteCommand = args[args.length - 1] as string;
     expect(remoteCommand).toContain(
@@ -88,5 +88,20 @@ describe("deployStaticProxyConfig", () => {
     expect(remoteCommand).toContain("sudo systemctl reload nginx");
 
     expect(opts.input).toContain("root ~/apps/app/dist;");
+  });
+
+  it("makes $HOME traversable so nginx (running as www-data) can reach the static build", async () => {
+    execa.mockResolvedValueOnce({}).mockResolvedValueOnce({});
+
+    await deployStaticProxyConfig(
+      target,
+      "app",
+      "app.local",
+      "~/apps/app/dist",
+    );
+
+    const [, args] = execa.mock.calls[0];
+    const remoteCommand = args[args.length - 1] as string;
+    expect(remoteCommand).toBe("chmod o+x $HOME");
   });
 });

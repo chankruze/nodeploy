@@ -72,6 +72,12 @@ export async function deployStaticProxyConfig(
   host: string,
   root: string,
 ): Promise<void> {
+  // nginx's worker runs as www-data, not the SSH user — if deploy_path defaults
+  // to ~/apps/<service> under a root-owned $HOME (mode 700), www-data can't
+  // traverse into it to serve the static build, which nginx surfaces as a
+  // rewrite/redirection cycle (or a plain 500) rather than a clear permission
+  // error. Grant traversal only, not read/listing, on $HOME itself.
+  await sshExec(target, "chmod o+x $HOME");
   await writeAndReload(target, service, buildStaticServerBlock(host, root));
 }
 
