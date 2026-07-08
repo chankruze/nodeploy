@@ -102,7 +102,13 @@ const GENERIC_START_SCRIPT_CANDIDATES = [
 export function resolveCommands(
   type: AppType,
   pkg: PackageJson,
+  startScriptOverride?: string,
 ): { buildCmd: string[] | null; startCmd: string[] } {
+  if (startScriptOverride) {
+    const buildCmd = hasScript(pkg, "build") ? ["run", "build"] : null;
+    return { buildCmd, startCmd: ["run", startScriptOverride] };
+  }
+
   switch (type) {
     case "nestjs":
       return { buildCmd: ["run", "build"], startCmd: ["run", "start:prod"] };

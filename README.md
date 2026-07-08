@@ -127,6 +127,10 @@ ssh:
 #   - --host                                  # detected start/preview script, e.g. to bind
                                               # a vite `preview` server to all interfaces
 
+# start_script: start:lan                     # optional — overrides which package.json
+                                              # script nodeploy runs under PM2, when
+                                              # auto-detection would pick the wrong one
+
 # port and proxy are optional — set both together to front the app with nginx
 # port: 3001
 # proxy:
@@ -136,6 +140,15 @@ ssh:
 `service`, `repo`, `server`, and `ssh.user` are required. `port` is required when `proxy` is set on a Node process app (`nestjs`/`nextjs`/`remix`/`express`/`generic`). Static apps (`vite`/`cra`) don't use `port` at all — they're served straight from disk by nginx — but still need `proxy.host` set, since that's the only way to reach a static app (there's no PM2 process, so there's no `<ip>:<port>` fallback for them).
 
 `proxy.host` can be anything — it's just the nginx `server_name`, resolved via a manual `/etc/hosts` entry (see below) or real DNS if the server has a public IP and domain. A natural pattern when running several apps on one server is `<app-name>.<hostname>`, e.g. `my-app.beepl-office-server-2`, or a shorter fake-TLD like `my-app.internal`/`my-app.lan`. **Avoid `.local`** — it's reserved for mDNS/Bonjour (RFC 6762), and macOS/Linux (avahi) will try multicast DNS resolution for that suffix first, which can make lookups slow or flaky, or ignore your `/etc/hosts` entry depending on `nsswitch.conf` ordering.
+
+### Overriding the detected start script
+
+Auto-detection resolves a start command purely from `package.json`'s `scripts`/`dependencies` shape (see [Supported app types](#supported-app-types-auto-detected)), which can pick the wrong script for apps that weren't built with a server-first `package.json`. Two common cases:
+
+- A `start` script meant for local/desktop use (e.g. `electron .`, or a script with no `HOST`/`0.0.0.0` binding), with a separate script meant for network access — often named `start:lan` or similar in ad-hoc Node servers.
+- A plain `node server.js`-style app with no framework dependency, which nodeploy detects as `generic` and correctly runs `start` — but if that project also has a differently-named LAN-facing variant, `start` may still be the wrong one to run unattended on a VPS.
+
+Set `start_script` in `nodeploy.yml` to force a specific script name; nodeploy still runs `build` first if one exists, but starts (and keeps running under PM2) whatever script you name instead of the auto-detected one. This intentionally doesn't change app-type *detection* — it only overrides which script gets executed.
 
 ### Reaching the app after deploy
 

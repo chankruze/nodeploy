@@ -14,7 +14,7 @@ export async function resolveRemoteApp(
   const pkg: PackageJson = JSON.parse(stdout);
 
   const type = detectAppType(pkg);
-  const { buildCmd, startCmd } = resolveCommands(type, pkg);
+  const { buildCmd, startCmd } = resolveCommands(type, pkg, config.startScript);
   const packageManager = await detectRemotePackageManager(
     target,
     config.deployPath,

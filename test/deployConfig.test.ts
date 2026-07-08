@@ -28,6 +28,7 @@ describe("validateDeployConfig", () => {
       port: undefined,
       proxy: undefined,
       startArgs: undefined,
+      startScript: undefined,
     });
   });
 
@@ -86,6 +87,30 @@ describe("validateDeployConfig", () => {
         start_args: "--host",
       }),
     ).toThrow(/start_args/);
+  });
+
+  it("accepts start_script and passes it through", () => {
+    const config = validateDeployConfig({
+      service: "api",
+      repo: "git@github.com:user/api.git",
+      server: "1.2.3.4",
+      ssh: { user: "root" },
+      start_script: "start:lan",
+    });
+
+    expect(config.startScript).toBe("start:lan");
+  });
+
+  it("throws when start_script is not a non-empty string", () => {
+    expect(() =>
+      validateDeployConfig({
+        service: "api",
+        repo: "git@github.com:user/api.git",
+        server: "1.2.3.4",
+        ssh: { user: "root" },
+        start_script: "",
+      }),
+    ).toThrow(/start_script/);
   });
 
   it("throws when service is missing", () => {

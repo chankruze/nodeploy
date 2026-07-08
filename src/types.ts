@@ -38,6 +38,8 @@ export interface DeployConfig {
   port?: number;
   proxy?: ProxyConfig;
   startArgs?: string[];
+  /** Overrides the auto-detected start script (e.g. "start:lan"). */
+  startScript?: string;
 }
 
 /** An SSH connection target derived from a DeployConfig. */

@@ -36,6 +36,10 @@ ssh:
 # start_args:
 #   - --host
 
+# Overrides which package.json script nodeploy runs under PM2, if auto-detection
+# picks the wrong one (e.g. a "start" script that isn't meant for a server).
+# start_script: start:lan
+
 # Uncomment to front the app with an nginx reverse proxy.
 # port: 3000
 # proxy:

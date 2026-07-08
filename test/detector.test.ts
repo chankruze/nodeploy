@@ -151,6 +151,26 @@ describe("resolveCommands", () => {
       startCmd: ["run", "start"],
     });
   });
+
+  it("overrides the start script regardless of detected type", () => {
+    const p = pkg({
+      scripts: { start: "electron .", "start:lan": "node server.js" },
+    });
+    expect(resolveCommands("generic", p, "start:lan")).toEqual({
+      buildCmd: null,
+      startCmd: ["run", "start:lan"],
+    });
+  });
+
+  it("keeps the build command when overriding the start script", () => {
+    const p = pkg({
+      scripts: { build: "tsc", start: "node dist/index.js", "start:lan": "node dist/index.js --lan" },
+    });
+    expect(resolveCommands("generic", p, "start:lan")).toEqual({
+      buildCmd: ["run", "build"],
+      startCmd: ["run", "start:lan"],
+    });
+  });
 });
 
 describe("resolveStaticDir", () => {

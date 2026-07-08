@@ -72,6 +72,16 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
   }
 
   if (
+    candidate.start_script !== undefined &&
+    (typeof candidate.start_script !== "string" ||
+      candidate.start_script.length === 0)
+  ) {
+    throw new Error(
+      "nodeploy.yml: \"start_script\" must be a non-empty string",
+    );
+  }
+
+  if (
     candidate.node_version !== undefined &&
     typeof candidate.node_version !== "string"
   ) {
@@ -108,6 +118,7 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
     port: candidate.port as number | undefined,
     proxy,
     startArgs: candidate.start_args as string[] | undefined,
+    startScript: candidate.start_script as string | undefined,
   };
 
   return config;
