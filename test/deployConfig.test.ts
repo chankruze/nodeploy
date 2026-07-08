@@ -1,0 +1,166 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  loadDeployConfig,
+  toSSHTarget,
+  validateDeployConfig,
+} from "../src/lib/deployConfig.js";
+
+describe("validateDeployConfig", () => {
+  it("accepts a minimal valid config and applies defaults", () => {
+    const config = validateDeployConfig({
+      service: "api",
+      repo: "git@github.com:user/api.git",
+      server: "1.2.3.4",
+      ssh: { user: "root" },
+    });
+
+    expect(config).toEqual({
+      service: "api",
+      repo: "git@github.com:user/api.git",
+      branch: "main",
+      server: "1.2.3.4",
+      ssh: { user: "root", keys: undefined, port: 22 },
+      deployPath: "~/apps/api",
+      port: undefined,
+      proxy: undefined,
+    });
+  });
+
+  it("accepts optional branch, deploy_path, ssh.keys, and ssh.port", () => {
+    const config = validateDeployConfig({
+      service: "api",
+      repo: "git@github.com:user/api.git",
+      branch: "develop",
+      server: "1.2.3.4",
+      ssh: { user: "root", keys: ["~/.ssh/id_ed25519"], port: 2222 },
+      deploy_path: "/srv/api",
+    });
+
+    expect(config.branch).toBe("develop");
+    expect(config.deployPath).toBe("/srv/api");
+    expect(config.ssh).toEqual({
+      user: "root",
+      keys: ["~/.ssh/id_ed25519"],
+      port: 2222,
+    });
+  });
+
+  it("accepts a proxy block when port is also set", () => {
+    const config = validateDeployConfig({
+      service: "api",
+      repo: "git@github.com:user/api.git",
+      server: "1.2.3.4",
+      ssh: { user: "root" },
+      port: 3000,
+      proxy: { host: "api.local" },
+    });
+
+    expect(config.proxy).toEqual({ host: "api.local" });
+    expect(config.port).toBe(3000);
+  });
+
+  it("throws when service is missing", () => {
+    expect(() =>
+      validateDeployConfig({
+        repo: "git@github.com:user/api.git",
+        server: "1.2.3.4",
+        ssh: { user: "root" },
+      }),
+    ).toThrow(/service/);
+  });
+
+  it("throws when repo is missing", () => {
+    expect(() =>
+      validateDeployConfig({
+        service: "api",
+        server: "1.2.3.4",
+        ssh: { user: "root" },
+      }),
+    ).toThrow(/repo/);
+  });
+
+  it("throws when ssh.user is missing", () => {
+    expect(() =>
+      validateDeployConfig({
+        service: "api",
+        repo: "git@github.com:user/api.git",
+        server: "1.2.3.4",
+        ssh: {},
+      }),
+    ).toThrow(/ssh.user/);
+  });
+
+  it("throws when proxy is set without port", () => {
+    expect(() =>
+      validateDeployConfig({
+        service: "api",
+        repo: "git@github.com:user/api.git",
+        server: "1.2.3.4",
+        ssh: { user: "root" },
+        proxy: { host: "api.local" },
+      }),
+    ).toThrow(/port.*required/);
+  });
+
+  it("throws on non-object input", () => {
+    expect(() => validateDeployConfig(null)).toThrow();
+    expect(() => validateDeployConfig("nope")).toThrow();
+  });
+});
+
+describe("loadDeployConfig", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nodeploy-deployconfig-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("throws a descriptive error when the file is missing", () => {
+    expect(() => loadDeployConfig(tmpDir, "nodeploy.yml")).toThrow(
+      /nodeploy\.yml/,
+    );
+  });
+
+  it("loads and validates an existing nodeploy.yml", () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "nodeploy.yml"),
+      [
+        "service: api",
+        "repo: git@github.com:user/api.git",
+        "server: 1.2.3.4",
+        "ssh:",
+        "  user: root",
+        "",
+      ].join("\n"),
+    );
+
+    const config = loadDeployConfig(tmpDir, "nodeploy.yml");
+    expect(config.service).toBe("api");
+    expect(config.server).toBe("1.2.3.4");
+  });
+});
+
+describe("toSSHTarget", () => {
+  it("derives an SSH target from a deploy config", () => {
+    const config = validateDeployConfig({
+      service: "api",
+      repo: "git@github.com:user/api.git",
+      server: "1.2.3.4",
+      ssh: { user: "root", keys: ["~/.ssh/id_ed25519"], port: 2222 },
+    });
+
+    expect(toSSHTarget(config)).toEqual({
+      host: "1.2.3.4",
+      user: "root",
+      port: 2222,
+      keys: ["~/.ssh/id_ed25519"],
+    });
+  });
+});
