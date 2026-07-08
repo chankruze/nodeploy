@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import { DEPLOY_CONFIG_FILENAME } from "../constants.js";
 import { loadDeployConfig, toSSHTarget } from "../lib/deployConfig.js";
+import { formatBytes, formatUptime } from "../lib/format.js";
 import { info, warn } from "../lib/logger.js";
 import { createPM2Adapter } from "../lib/pm2.js";
 import type { PM2ProcessInfo } from "../types.js";
@@ -31,8 +32,16 @@ export function registerStatusCommand(program: Command): void {
       }
 
       const process_ = processes.find((p) => p.name === config.service);
-      const status = process_ ? STATUS_ICONS[process_.status] : "not deployed";
+      if (!process_) {
+        info(`${config.service}: not deployed`);
+        return;
+      }
 
-      info(`${config.service}: ${status}`);
+      info(`${config.service}: ${STATUS_ICONS[process_.status]}`);
+      info(`  pid:      ${process_.pid}`);
+      info(`  cpu:      ${process_.cpu}%`);
+      info(`  memory:   ${formatBytes(process_.memoryBytes)}`);
+      info(`  uptime:   ${formatUptime(process_.uptimeMs)}`);
+      info(`  restarts: ${process_.restarts}`);
     });
 }
