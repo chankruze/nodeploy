@@ -15,32 +15,45 @@ export interface PackageJson {
   devDependencies?: Record<string, string>;
 }
 
-/** Shape of a per-app `nodeploy.json` file. */
-export interface AppConfig {
-  name: string;
-  port: number;
-  env?: Record<string, string>;
+export interface SSHConfig {
+  user: string;
+  keys?: string[];
+  port?: number;
 }
 
-export interface DetectedApp {
+export interface ProxyConfig {
+  host: string;
+}
+
+/** Shape of a per-app `nodeploy.yml` file. */
+export interface DeployConfig {
+  service: string;
+  repo: string;
+  branch: string;
+  server: string;
+  ssh: SSHConfig;
+  deployPath: string;
+  port?: number;
+  proxy?: ProxyConfig;
+}
+
+/** An SSH connection target derived from a DeployConfig. */
+export interface SSHTarget {
+  host: string;
+  user: string;
+  port: number;
+  keys?: string[];
+}
+
+/** A detected app running on the remote server, resolved from its remote package.json. */
+export interface RemoteApp {
   name: string;
   dir: string;
-  port?: number;
   type: AppType;
   packageManager: PackageManagerName;
   installCmd: string[];
   buildCmd: string[] | null;
   startCmd: string[];
-  pkg: PackageJson;
-  hasNodeployConfig: boolean;
-}
-
-/** Shape of the global `~/.nodeploy/config.json` file. */
-export interface GlobalConfig {
-  appsDir: string;
-  defaults?: {
-    packageManager?: PackageManagerName | "auto";
-  };
 }
 
 export type PM2Status =
