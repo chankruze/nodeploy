@@ -137,6 +137,21 @@ ssh:
 
 Since domain resolution for `.local`-style hosts isn't handled by nodeploy, after a deploy with `proxy` configured you'll need to point that hostname at the server yourself — e.g. add `<server-ip> inventory-api.local` to `/etc/hosts` on machines that need to reach it, or use real DNS if the server has a public IP and domain.
 
+### Reaching the app after deploy
+
+`nodeploy deploy` prints the `proxy.host` it configured, but doesn't touch your local machine's `/etc/hosts` — do that yourself, once per machine that needs to reach the app:
+
+```sh
+# macOS/Linux (needs sudo to edit /etc/hosts)
+echo "<server-ip> inventory-api.local" | sudo tee -a /etc/hosts
+
+# Windows (run as Administrator, edit with a text editor)
+# C:\Windows\System32\drivers\etc\hosts
+#   <server-ip> inventory-api.local
+```
+
+Then visit `http://inventory-api.local` (no port needed — nginx listens on 80 and either proxies to the app or, for static `vite`/`cra` apps, serves the build output directly). If the entry is ever wrong or stale, edit/remove that line — nodeploy never manages `/etc/hosts` for you.
+
 ## Supported app types (auto-detected)
 
 Detection reads the remote `package.json`'s scripts and dependencies — no configuration needed.
