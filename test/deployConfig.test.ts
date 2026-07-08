@@ -24,6 +24,7 @@ describe("validateDeployConfig", () => {
       server: "1.2.3.4",
       ssh: { user: "root", keys: undefined, port: 22 },
       deployPath: "~/apps/api",
+      nodeVersion: "22",
       port: undefined,
       proxy: undefined,
     });

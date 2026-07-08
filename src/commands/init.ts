@@ -28,6 +28,9 @@ ssh:
 
 # deploy_path: ~/apps/my-app
 
+# NodeSource release line to install if node is missing on the server (used by nodeploy setup).
+# node_version: 22
+
 # Uncomment to front the app with an nginx reverse proxy.
 # port: 3000
 # proxy:
@@ -50,6 +53,6 @@ export function registerInitCommand(program: Command): void {
 
       fs.writeFileSync(configPath, TEMPLATE);
       success(`Created ${configPath}`);
-      info("Fill in service/repo/server/ssh, then run `nodeploy deploy`.");
+      info("Fill in service/repo/server/ssh, then run `nodeploy setup` once, then `nodeploy deploy`.");
     });
 }

@@ -8,6 +8,7 @@ export interface PM2Adapter {
   delete(name: string): Promise<void>;
   list(): Promise<PM2ProcessInfo[]>;
   logs(name: string, opts?: { lines?: number }): Promise<void>;
+  save(): Promise<void>;
   isInstalled(): Promise<boolean>;
 }
 
@@ -61,6 +62,7 @@ export class SSHPM2Adapter implements PM2Adapter {
     const existing = await this.list();
     if (existing.some((p) => p.name === app.name)) {
       await this.restart(app.name);
+      await this.save();
       return;
     }
 
@@ -69,6 +71,7 @@ export class SSHPM2Adapter implements PM2Adapter {
       this.target,
       `cd "${app.dir}" && pm2 start npm --name "${app.name}" -- run ${scriptName}`,
     );
+    await this.save();
   }
 
   async restart(name: string): Promise<void> {
@@ -81,9 +84,7 @@ export class SSHPM2Adapter implements PM2Adapter {
 
   async delete(name: string): Promise<void> {
     await sshExec(this.target, `pm2 delete "${name}"`);
-  }
-
-  async list(): Promise<PM2ProcessInfo[]> {
+  }  async list(): Promise<PM2ProcessInfo[]> {
     const { stdout } = await sshExec(this.target, "pm2 jlist");
     const raw: PM2RawProcess[] = JSON.parse(stdout);
     return raw.map(toProcessInfo);
@@ -103,6 +104,10 @@ export class SSHPM2Adapter implements PM2Adapter {
     } catch {
       return false;
     }
+  }
+
+  async save(): Promise<void> {
+    await sshExec(this.target, "pm2 save");
   }
 }
 

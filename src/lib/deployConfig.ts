@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse } from "yaml";
-import { DEFAULT_BRANCH, DEFAULT_SSH_PORT } from "../constants.js";
+import { DEFAULT_BRANCH, DEFAULT_NODE_VERSION, DEFAULT_SSH_PORT } from "../constants.js";
 import type { DeployConfig, SSHTarget } from "../types.js";
 
 export function validateDeployConfig(raw: unknown): DeployConfig {
@@ -60,6 +60,13 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
     throw new Error("nodeploy.yml: \"port\" must be a number");
   }
 
+  if (
+    candidate.node_version !== undefined &&
+    typeof candidate.node_version !== "string"
+  ) {
+    throw new Error("nodeploy.yml: \"node_version\" must be a string");
+  }
+
   let proxy: DeployConfig["proxy"];
   if (candidate.proxy !== undefined) {
     if (typeof candidate.proxy !== "object" || candidate.proxy === null) {
@@ -90,6 +97,8 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
     deployPath:
       (candidate.deploy_path as string | undefined) ??
       `~/apps/${candidate.service}`,
+    nodeVersion:
+      (candidate.node_version as string | undefined) ?? DEFAULT_NODE_VERSION,
     port: candidate.port as number | undefined,
     proxy,
   };

@@ -48,6 +48,7 @@ describe("SSHPM2Adapter", () => {
   it("start() calls pm2 start with the app's start script when not already running", async () => {
     execa.mockResolvedValueOnce({ stdout: "[]" }); // list()
     execa.mockResolvedValueOnce({}); // start
+    execa.mockResolvedValueOnce({}); // save
 
     const adapter = new SSHPM2Adapter(target);
     await adapter.start(makeApp({ startCmd: ["run", "start:prod"] }));
@@ -69,6 +70,12 @@ describe("SSHPM2Adapter", () => {
       ],
       {},
     );
+    expect(execa).toHaveBeenNthCalledWith(
+      3,
+      "ssh",
+      ["-p", "22", "root@203.0.113.10", "pm2 save"],
+      {},
+    );
   });
 
   it("start() calls restart instead when the app is already running", async () => {
@@ -76,6 +83,7 @@ describe("SSHPM2Adapter", () => {
       stdout: JSON.stringify([jlistProcess()]),
     }); // list()
     execa.mockResolvedValueOnce({}); // restart
+    execa.mockResolvedValueOnce({}); // save
 
     const adapter = new SSHPM2Adapter(target);
     await adapter.start(makeApp());
@@ -84,6 +92,12 @@ describe("SSHPM2Adapter", () => {
       2,
       "ssh",
       ["-p", "22", "root@203.0.113.10", 'pm2 restart "api"'],
+      {},
+    );
+    expect(execa).toHaveBeenNthCalledWith(
+      3,
+      "ssh",
+      ["-p", "22", "root@203.0.113.10", "pm2 save"],
       {},
     );
   });
@@ -168,5 +182,15 @@ describe("SSHPM2Adapter", () => {
   it("isInstalled() returns false when pm2 --version rejects", async () => {
     execa.mockRejectedValueOnce(new Error("command not found"));
     await expect(new SSHPM2Adapter(target).isInstalled()).resolves.toBe(false);
+  });
+
+  it("save() calls pm2 save", async () => {
+    execa.mockResolvedValueOnce({});
+    await new SSHPM2Adapter(target).save();
+    expect(execa).toHaveBeenCalledWith(
+      "ssh",
+      ["-p", "22", "root@203.0.113.10", "pm2 save"],
+      {},
+    );
   });
 });

@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { registerInitCommand } from "./commands/init.js";
+import { registerSetupCommand } from "./commands/setup.js";
 import { registerDeployCommand } from "./commands/deploy.js";
 import { registerStatusCommand } from "./commands/status.js";
 import { registerRestartCommand } from "./commands/restart.js";
@@ -16,6 +17,7 @@ export function createProgram(): Command {
     .version("0.1.0");
 
   registerInitCommand(program);
+  registerSetupCommand(program);
   registerDeployCommand(program);
   registerStatusCommand(program);
   registerRestartCommand(program);

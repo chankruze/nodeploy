@@ -30,6 +30,7 @@ function makeConfig(overrides: Partial<DeployConfig> = {}): DeployConfig {
     server: "203.0.113.10",
     ssh: { user: "root", port: 22 },
     deployPath: "~/apps/api",
+    nodeVersion: "22",
     ...overrides,
   };
 }

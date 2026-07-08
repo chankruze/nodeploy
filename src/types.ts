@@ -33,6 +33,7 @@ export interface DeployConfig {
   server: string;
   ssh: SSHConfig;
   deployPath: string;
+  nodeVersion: string;
   port?: number;
   proxy?: ProxyConfig;
 }

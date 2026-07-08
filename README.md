@@ -24,9 +24,9 @@ The built CLI is at `dist/cli.js` (bin name `nodeploy`). Link it locally with `p
 
 ## Prerequisites
 
-- Key-based SSH access from your machine to the target server (`ssh user@server` should work without a password prompt).
-- `git`, `node`, and `pm2` installed on the server, and the server able to reach your git remote (e.g. via a deploy key) to clone/pull the repo.
-- If you use `proxy`, `nginx` installed on the server and passwordless `sudo` for the SSH user (writing to `/etc/nginx/sites-available` and reloading the service both need it).
+- A fresh Ubuntu LTS server (24.04/26.04) reachable over SSH. `nodeploy setup` provisions everything else below — you don't need to install git/Node/PM2/nginx by hand.
+- Key-based SSH access from your machine to the target server (`ssh user@server` should work without a password prompt), and that user must be able to run `sudo` without a password (needed by `setup` to install packages and by the nginx proxy step).
+- The server needs outbound access to your git remote to clone/pull the repo (e.g. via a deploy key for private repos).
 
 Run `nodeploy doctor` to check all of the above.
 
@@ -39,12 +39,16 @@ nodeploy init        # scaffold nodeploy.yml in the current directory
 # edit nodeploy.yml: service, repo, server, ssh.user, and optionally proxy
 
 nodeploy doctor       # verify SSH + server prerequisites
-nodeploy deploy       # clone/pull, install, build, pm2-start on the server
+nodeploy setup        # once per app per server: install git/Node/PM2/nginx, prep deploy_path
+nodeploy deploy       # clone/pull, install, build, pm2-start on the server — run this every time
 nodeploy status       # show the PM2 status of the deployed service
 nodeploy logs         # stream PM2 logs
 nodeploy restart
 nodeploy stop
 ```
+
+`setup` is idempotent and safe to re-run, but you only need it once per app per server — after that, `deploy` is the day-to-day command.
+
 
 ## `nodeploy.yml`
 
@@ -64,6 +68,9 @@ ssh:
   # port: 22                                 # optional, default 22
 
 # deploy_path: ~/apps/inventory-api          # optional, default ~/apps/<service>
+
+# node_version: 22                            # optional, default "22" — NodeSource release line
+                                              # `nodeploy setup` installs if node is missing
 
 # port and proxy are optional — set both together to front the app with nginx
 # port: 3001
@@ -90,26 +97,42 @@ Detection reads the remote `package.json`'s scripts and dependencies — no conf
 
 Package manager (`npm` vs `pnpm`) is chosen automatically based on whether the app has a `pnpm-lock.yaml` on the server.
 
+## What `nodeploy setup` does
+
+Run once per app per server, before the first deploy (safe to re-run — every step checks first and skips if already satisfied):
+
+1. Checks the SSH connection to `server`.
+2. Installs `git` via `apt` if missing.
+3. Installs Node.js via the [NodeSource](https://github.com/nodesource/distributions) `node_version` release line (default `22`) if `node` isn't already on the server's `PATH`.
+4. Installs PM2 globally (`npm install -g pm2`) if missing, then runs `pm2 startup systemd` so PM2-managed apps survive a server reboot.
+5. If `proxy` is configured in `nodeploy.yml`, installs and starts `nginx` via `apt`.
+6. Creates `deploy_path` if it doesn't exist yet.
+
+This targets Ubuntu/Debian (`apt`, `systemd`) — tested against Ubuntu LTS. Other distros aren't supported by `setup` yet; install prerequisites manually and `nodeploy doctor`/`deploy` will still work.
+
 ## What `nodeploy deploy` does
+
+Run every time you ship a change (after `setup` has run at least once):
 
 1. Checks the SSH connection to `server`.
 2. Clones the repo into `deploy_path` if it isn't there yet, otherwise fetches and hard-resets to `origin/<branch>`.
 3. Reads the remote `package.json` to detect the app type and resolve install/build/start commands.
 4. Installs dependencies and runs the build step (if any) on the server.
-5. Starts (or restarts, if already running) the app under PM2 as `service`.
+5. Starts (or restarts, if already running) the app under PM2 as `service`, then `pm2 save`s the process list so it's restored on reboot.
 6. If `proxy` is configured, writes an nginx server block proxying `proxy.host` to `port`, symlinks it into `sites-enabled`, and reloads nginx.
 
 ## Architecture
 
 - `src/lib/ssh.ts` — the seam everything else is built on: shells out to the system `ssh` binary via `execa` to run a remote command or test connectivity.
+- `src/lib/serverSetup.ts` — idempotent provisioning steps (git/Node/PM2/nginx install, PM2 boot startup, deploy path creation) used by `nodeploy setup`.
 - `src/lib/git.ts` — clones or fetches+resets the app's repo on the server over SSH.
 - `src/lib/nginx.ts` — generates an nginx server block and pipes it to the server via SSH (`sites-available` → `sites-enabled` → `nginx -t` → reload).
-- `src/lib/deployConfig.ts` — loads and validates `nodeploy.yml` (YAML via the `yaml` package), applying defaults for `branch`/`deploy_path`/`ssh.port`.
+- `src/lib/deployConfig.ts` — loads and validates `nodeploy.yml` (YAML via the `yaml` package), applying defaults for `branch`/`deploy_path`/`ssh.port`/`node_version`.
 - `src/lib/detector.ts` — pluggable, ordered rule list for app-type detection from a `package.json`. Adding a new framework means adding a rule here.
 - `src/lib/pm2.ts` — all process management goes through the `PM2Adapter` interface; `SSHPM2Adapter` runs `pm2` subcommands on the server via `sshExec`.
 - `src/lib/doctorChecks.ts` — individual environment health checks, run against the remote server over SSH.
 
-Out of scope for this phase (left as clean extension points, not built): Docker, env/secrets injection, multi-server roles or accessories (databases, etc.), HTTPS/SSL termination, automatic DNS/hosts-file management, and a rollback command.
+Out of scope for this phase (left as clean extension points, not built): Docker, env/secrets injection, multi-server roles or accessories (databases, etc.), HTTPS/SSL termination, automatic DNS/hosts-file management, non-Debian/Ubuntu `setup` support, and a rollback command.
 
 ## Testing
 
@@ -118,14 +141,15 @@ pnpm test        # vitest
 pnpm typecheck   # tsc --noEmit
 ```
 
-Unit-tested with mocked `execa` calls: app-type detection, package manager detection, `nodeploy.yml` loading/validation, SSH argument building, the git clone/pull command, the nginx server-block template and remote deploy command, the PM2 adapter (argument shapes, status mapping, mocked success/failure), and doctor checks.
+Unit-tested with mocked `execa` calls: app-type detection, package manager detection, `nodeploy.yml` loading/validation, SSH argument building, the git clone/pull command, the nginx server-block template and remote deploy command, the PM2 adapter (argument shapes, status mapping, mocked success/failure), server provisioning steps (git/Node/PM2/nginx install checks), and doctor checks.
 
-**Not unit tested** (requires a real server): actual `pm2 start` process lifecycle, real `git`/`npm`/`pnpm install`/build execution, nginx reload behavior, and full command flows end-to-end. Verify these manually against a toy app and a real VPS:
+**Not unit tested** (requires a real server): actual `apt`/NodeSource/PM2 installs, `pm2 start` process lifecycle, real `git`/`npm`/`pnpm install`/build execution, nginx reload behavior, and full command flows end-to-end. Verify these manually against a toy app and a real VPS:
 
 ```sh
 cd my-test-app
 nodeploy init          # fill in service/repo/server/ssh
 nodeploy doctor        # confirm SSH + remote prerequisites
+nodeploy setup         # provision git/Node/PM2/nginx once
 nodeploy deploy
 nodeploy status
 nodeploy logs
