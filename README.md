@@ -31,6 +31,29 @@ The built CLI is at `dist/cli.js` (bin name `nodeploy`). Link it locally with `p
 
 Run `nodeploy doctor` to check all of the above.
 
+### Getting passwordless sudo (or avoiding the need for it)
+
+SSH key auth and `sudo` are unrelated: the key only proves who you are logging in as, and `sudo` is a separate authorization check (via `/etc/sudoers`) that has no idea how you authenticated. There's no way to make a key grant sudo rights on its own — one of the following has to be true on the server first. This is the same constraint [Kamal](https://kamal-deploy.org/) has; it just requires you to set it up first rather than warning about it.
+
+Pick one, from a session that already has root/sudo access (console access, your VPS provider's web terminal, or an existing admin account — not the restricted user itself, since it can't grant itself sudo):
+
+**Option 1 — deploy as `root`.** Simplest, and what Kamal defaults to on providers where the initial VPS user is root. Enable key-only root login in `/etc/ssh/sshd_config`:
+
+```
+PermitRootLogin prohibit-password
+```
+
+then `sudo systemctl restart sshd`, and add your public key to `/root/.ssh/authorized_keys`. Set `ssh.user: root` in `nodeploy.yml`. No `sudo` prefix is needed at all in this case.
+
+**Option 2 — grant the existing user passwordless sudo.** Keeps a non-root account. Scope it to just what `setup` needs (adjust paths with `which apt-get`/`which systemctl`):
+
+```sh
+echo 'youruser ALL=(ALL) NOPASSWD: /usr/bin/apt-get, /usr/sbin/pm2, /bin/systemctl' | sudo EDITOR='tee -a' visudo -f /etc/sudoers.d/youruser
+sudo chmod 440 /etc/sudoers.d/youruser
+```
+
+**If you can't do either** — e.g. a shared/restricted account behind a tunnel — `setup` still works. Node.js and PM2 install via nvm/npm without sudo, and the sudo-only steps (`git`/`nginx` install, `pm2 startup`) just warn and get skipped; see [What `nodeploy setup` does](#what-nodeploy-setup-does) for what you lose in that case.
+
 ## Quick start
 
 Add a `nodeploy.yml` to the root of the app's repo (one config per app, checked in like a Kamal `config/deploy.yml`), then run every command from that directory:
