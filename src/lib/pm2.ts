@@ -91,7 +91,14 @@ export class SSHPM2Adapter implements PM2Adapter {
 
   async list(): Promise<PM2ProcessInfo[]> {
     const { stdout } = await sshExec(this.target, withNvm("pm2 jlist"));
-    const raw: PM2RawProcess[] = JSON.parse(stdout);
+    // On first invocation PM2 spawns its daemon and prints "[PM2] ..."
+    // banner lines to stdout before the JSON array — strip them.
+    const json = stdout
+      .split("\n")
+      .filter((line) => !line.startsWith("[PM2]"))
+      .join("\n")
+      .trim();
+    const raw: PM2RawProcess[] = JSON.parse(json);
     return raw.map(toProcessInfo);
   }
 

@@ -153,6 +153,17 @@ describe("SSHPM2Adapter", () => {
     ]);
   });
 
+  it("list() strips a PM2 daemon-spawn banner preceding the JSON", async () => {
+    execa.mockResolvedValueOnce({
+      stdout: `[PM2] Spawning PM2 daemon with pm2_home=/home/root/.pm2\n[PM2] PM2 Successfully daemonized\n${JSON.stringify(
+        [jlistProcess()],
+      )}`,
+    });
+
+    const result = await new SSHPM2Adapter(target).list();
+    expect(result[0].name).toBe("api");
+  });
+
   it("list() maps unrecognized statuses to unknown", async () => {
     execa.mockResolvedValueOnce({
       stdout: JSON.stringify([

@@ -54,6 +54,33 @@ sudo chmod 440 /etc/sudoers.d/youruser
 
 **If you can't do either** — e.g. a shared/restricted account behind a tunnel — `setup` still works. Node.js and PM2 install via nvm/npm without sudo, and the sudo-only steps (`git`/`nginx` install, `pm2 startup`) just warn and get skipped; see [What `nodeploy setup` does](#what-nodeploy-setup-does) for what you lose in that case.
 
+### Setting up a deploy key for a private repo
+
+`nodeploy deploy` clones/pulls `repo` *from the server*, not from your machine — so it's the server's SSH identity that needs access to the repo, not yours. If you see `Host key verification failed` or `Permission denied (publickey)` during the sync step, the server either doesn't trust GitHub's host key yet or has no key registered with it. Fix both from a shell on the server itself:
+
+```sh
+# 1. Trust GitHub's host key (first-ever SSH connection to github.com from this server)
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+
+# 2. Generate a dedicated deploy keypair (don't reuse the key you use to SSH into the server)
+ssh-keygen -t ed25519 -C "<service>-deploy-key" -f ~/.ssh/<service>_deploy_key -N ""
+cat ~/.ssh/<service>_deploy_key.pub
+```
+
+Add the printed public key as a **Deploy key** on the GitHub repo (Settings → Deploy keys → Add deploy key) — read-only access is enough since `nodeploy` only clones/pulls. Then point the server's SSH at it, since `git@github.com` otherwise only tries default keys like `~/.ssh/id_*`:
+
+```sh
+cat >> ~/.ssh/config <<'EOF'
+Host github.com
+  IdentityFile ~/.ssh/<service>_deploy_key
+  IdentitiesOnly yes
+EOF
+chmod 600 ~/.ssh/config
+```
+
+Verify with `ssh -T git@github.com` from the server — it should greet you with the repo name instead of erroring. Once that works, `nodeploy deploy` will be able to clone/pull.
+
 ## Quick start
 
 Add a `nodeploy.yml` to the root of the app's repo (one config per app, checked in like a Kamal `config/deploy.yml`), then run every command from that directory:
@@ -185,3 +212,5 @@ nodeploy stop
 ### Known issue: PM2 daemon crash on some machines
 
 On some machines, the PM2 daemon (tested on 5.4.3 and 7.0.3) crashes immediately with `RangeError: Map maximum size exceeded` inside its `pm2-axon` IPC transport, which relies on Node's deprecated `domain` module. This was reproduced identically across Node 18, 22, and 24 on one development machine, ruling out a Node-version incompatibility — it's more likely caused by machine-level process interception (e.g. a corporate security/MDM agent instrumenting every process's socket creation). If `nodeploy doctor` reports PM2 as installed on the server but `deploy`/`status`/`restart`/`stop`/`logs` hang or fail with this error, check `~/.pm2/pm2.log` on the server and investigate what's instrumenting Node processes on that machine — this is an environment issue, not specific to nodeploy.
+
+The first `pm2` command ever run on a server also prints `[PM2] Spawning PM2 daemon...`/`[PM2] PM2 Successfully daemonized` banner lines to stdout before spawning the daemon. `nodeploy` strips these when parsing `pm2 jlist` output (`src/lib/pm2.ts`), so this is handled automatically — mentioned here only in case you see those lines while debugging raw `pm2` output on the server yourself.
