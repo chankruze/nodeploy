@@ -5,7 +5,9 @@ const { execa } = vi.hoisted(() => ({ execa: vi.fn() }));
 
 vi.mock("execa", () => ({ execa }));
 
-const { buildSSHArgs, sshExec, sshTest } = await import("../src/lib/ssh.js");
+const { buildSSHArgs, resolveHomePath, sshExec, sshTest } = await import(
+  "../src/lib/ssh.js"
+);
 
 describe("buildSSHArgs", () => {
   it("builds args with port and user@host, no keys", () => {
@@ -78,5 +80,34 @@ describe("sshTest", () => {
   it("returns false when the connection fails", async () => {
     execa.mockRejectedValueOnce(new Error("connection refused"));
     await expect(sshTest(target)).resolves.toBe(false);
+  });
+});
+
+describe("resolveHomePath", () => {
+  const target: SSHTarget = { host: "1.2.3.4", user: "root", port: 22 };
+
+  beforeEach(() => {
+    execa.mockReset();
+  });
+
+  it("replaces a $HOME prefix with the real remote home directory", async () => {
+    execa.mockResolvedValueOnce({ stdout: "/root\n" });
+    await expect(
+      resolveHomePath(target, "$HOME/apps/api/dist"),
+    ).resolves.toBe("/root/apps/api/dist");
+  });
+
+  it("replaces a ~ prefix with the real remote home directory", async () => {
+    execa.mockResolvedValueOnce({ stdout: "/home/deploy\n" });
+    await expect(resolveHomePath(target, "~/apps/api/dist")).resolves.toBe(
+      "/home/deploy/apps/api/dist",
+    );
+  });
+
+  it("leaves an already-absolute path untouched, without querying the remote", async () => {
+    await expect(resolveHomePath(target, "/srv/api/dist")).resolves.toBe(
+      "/srv/api/dist",
+    );
+    expect(execa).not.toHaveBeenCalled();
   });
 });

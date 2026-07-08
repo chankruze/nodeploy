@@ -7,7 +7,7 @@ import { deployProxyConfig, deployStaticProxyConfig } from "../lib/nginx.js";
 import { createPM2Adapter } from "../lib/pm2.js";
 import { resolveRemoteApp } from "../lib/remoteApp.js";
 import { withNvm } from "../lib/remoteEnv.js";
-import { sshExec, sshTest } from "../lib/ssh.js";
+import { resolveHomePath, sshExec, sshTest } from "../lib/ssh.js";
 import type { DeployConfig } from "../types.js";
 
 /** Prints how to reach the app right now, before any local DNS/hosts setup. */
@@ -80,7 +80,10 @@ export function registerDeployCommand(program: Command): void {
           return;
         }
 
-        const root = `${app.dir}/${app.staticDir}`;
+        const root = await resolveHomePath(
+          target,
+          `${app.dir}/${app.staticDir}`,
+        );
         info(`  Configuring nginx to serve ${root} for ${config.proxy.host}...`);
         await deployStaticProxyConfig(
           target,

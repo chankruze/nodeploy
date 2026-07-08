@@ -40,4 +40,19 @@ export async function sshTest(target: SSHTarget): Promise<boolean> {
   }
 }
 
+/** Resolves a `$HOME`/`~`-relative remote path to an absolute one. Needed
+ * wherever a path is written into a config file nginx reads directly — nginx
+ * doesn't run through a shell, so it has no way to expand either form itself. */
+export async function resolveHomePath(
+  target: SSHTarget,
+  remotePath: string,
+): Promise<string> {
+  if (!remotePath.startsWith("$HOME") && !remotePath.startsWith("~")) {
+    return remotePath;
+  }
+  const { stdout } = await sshExec(target, "echo $HOME");
+  const home = stdout.trim();
+  return remotePath.replace(/^(\$HOME|~)/, home);
+}
+
 export { buildSSHArgs };

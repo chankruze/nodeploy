@@ -23,7 +23,7 @@ describe("validateDeployConfig", () => {
       branch: "main",
       server: "1.2.3.4",
       ssh: { user: "root", keys: undefined, port: 22 },
-      deployPath: "~/apps/api",
+      deployPath: "$HOME/apps/api",
       nodeVersion: "22",
       port: undefined,
       proxy: undefined,
@@ -49,6 +49,18 @@ describe("validateDeployConfig", () => {
       keys: ["~/.ssh/id_ed25519"],
       port: 2222,
     });
+  });
+
+  it("normalizes a ~-prefixed deploy_path to $HOME, which expands correctly inside double-quoted remote commands", () => {
+    const config = validateDeployConfig({
+      service: "api",
+      repo: "git@github.com:user/api.git",
+      server: "1.2.3.4",
+      ssh: { user: "root" },
+      deploy_path: "~/custom/api",
+    });
+
+    expect(config.deployPath).toBe("$HOME/custom/api");
   });
 
   it("accepts a proxy block when port is also set", () => {

@@ -4,6 +4,15 @@ import { parse } from "yaml";
 import { DEFAULT_BRANCH, DEFAULT_NODE_VERSION, DEFAULT_SSH_PORT } from "../constants.js";
 import type { DeployConfig, SSHTarget } from "../types.js";
 
+// `~` only expands via shell tilde-expansion, which doesn't happen when a path
+// is interpolated inside a double-quoted string (as every remote command here
+// does) — normalize to `$HOME`, which does expand in that context.
+function normalizeHomePath(deployPath: string): string {
+  if (deployPath === "~") return "$HOME";
+  if (deployPath.startsWith("~/")) return `$HOME/${deployPath.slice(2)}`;
+  return deployPath;
+}
+
 export function validateDeployConfig(raw: unknown): DeployConfig {
   if (typeof raw !== "object" || raw === null) {
     throw new Error("nodeploy.yml must be a YAML object");
@@ -110,9 +119,10 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
       keys: sshRaw.keys as string[] | undefined,
       port: (sshRaw.port as number | undefined) ?? DEFAULT_SSH_PORT,
     },
-    deployPath:
+    deployPath: normalizeHomePath(
       (candidate.deploy_path as string | undefined) ??
-      `~/apps/${candidate.service}`,
+        `$HOME/apps/${candidate.service}`,
+    ),
     nodeVersion:
       (candidate.node_version as string | undefined) ?? DEFAULT_NODE_VERSION,
     port: candidate.port as number | undefined,
