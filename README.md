@@ -4,6 +4,17 @@ A lightweight, self-hosted deployment CLI for shipping a Node.js app to a bare-m
 
 ## Install
 
+Add nodeploy as a dev dependency of the app you want to deploy, straight from git (not published to a registry yet):
+
+```sh
+pnpm add -D git+https://github.com/<you>/nodeploy.git
+# or: npm install -D git+https://github.com/<you>/nodeploy.git
+```
+
+The `prepare` script runs `tsup` on install, so `dist/cli.js` is built automatically and `nodeploy` is available via `pnpm exec nodeploy` / `npx nodeploy` / your `package.json` scripts.
+
+To work on nodeploy itself instead, clone this repo and build it locally:
+
 ```sh
 pnpm install
 pnpm build
