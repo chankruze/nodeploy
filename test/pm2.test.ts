@@ -23,6 +23,7 @@ function makeApp(overrides: Partial<RemoteApp> = {}): RemoteApp {
     installCmd: ["npm", "install"],
     buildCmd: null,
     startCmd: ["run", "start"],
+    startArgs: [],
     ...overrides,
   };
 }
@@ -75,6 +76,31 @@ describe("SSHPM2Adapter", () => {
       3,
       "ssh",
       ["-p", "22", "root@203.0.113.10", withNvm("pm2 save")],
+      {},
+    );
+  });
+
+  it("start() appends startArgs after -- when configured", async () => {
+    execa.mockResolvedValueOnce({ stdout: "[]" }); // list()
+    execa.mockResolvedValueOnce({}); // start
+    execa.mockResolvedValueOnce({}); // save
+
+    const adapter = new SSHPM2Adapter(target);
+    await adapter.start(
+      makeApp({ startCmd: ["run", "preview"], startArgs: ["--host"] }),
+    );
+
+    expect(execa).toHaveBeenNthCalledWith(
+      2,
+      "ssh",
+      [
+        "-p",
+        "22",
+        "root@203.0.113.10",
+        withNvm(
+          'cd "~/apps/api" && pm2 start npm --name "api" -- run preview -- --host',
+        ),
+      ],
       {},
     );
   });

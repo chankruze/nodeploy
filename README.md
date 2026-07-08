@@ -123,6 +123,10 @@ ssh:
 # node_version: 22                            # optional, default "22" — nvm version/alias
                                               # `nodeploy setup` installs if node is missing
 
+# start_args:                                 # optional — extra flags appended to the
+#   - --host                                  # detected start/preview script, e.g. to bind
+                                              # a vite `preview` server to all interfaces
+
 # port and proxy are optional — set both together to front the app with nginx
 # port: 3001
 # proxy:
@@ -169,7 +173,7 @@ Run every time you ship a change (after `setup` has run at least once):
 2. Clones the repo into `deploy_path` if it isn't there yet, otherwise fetches and hard-resets to `origin/<branch>`.
 3. Reads the remote `package.json` to detect the app type and resolve install/build/start commands.
 4. Installs dependencies and runs the build step (if any) on the server.
-5. Starts (or restarts, if already running) the app under PM2 as `service`, then `pm2 save`s the process list so it's restored on reboot.
+5. Starts (or restarts, if already running) the app under PM2 as `service` (appending `start_args`, if set, to the start/preview script), then `pm2 save`s the process list so it's restored on reboot.
 6. If `proxy` is configured, writes an nginx server block proxying `proxy.host` to `port`, symlinks it into `sites-enabled`, and reloads nginx.
 
 ## Architecture

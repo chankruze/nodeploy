@@ -27,6 +27,7 @@ describe("validateDeployConfig", () => {
       nodeVersion: "22",
       port: undefined,
       proxy: undefined,
+      startArgs: undefined,
     });
   });
 
@@ -61,6 +62,30 @@ describe("validateDeployConfig", () => {
 
     expect(config.proxy).toEqual({ host: "api.local" });
     expect(config.port).toBe(3000);
+  });
+
+  it("accepts start_args and passes it through", () => {
+    const config = validateDeployConfig({
+      service: "api",
+      repo: "git@github.com:user/api.git",
+      server: "1.2.3.4",
+      ssh: { user: "root" },
+      start_args: ["--host"],
+    });
+
+    expect(config.startArgs).toEqual(["--host"]);
+  });
+
+  it("throws when start_args is not an array of strings", () => {
+    expect(() =>
+      validateDeployConfig({
+        service: "api",
+        repo: "git@github.com:user/api.git",
+        server: "1.2.3.4",
+        ssh: { user: "root" },
+        start_args: "--host",
+      }),
+    ).toThrow(/start_args/);
   });
 
   it("throws when service is missing", () => {

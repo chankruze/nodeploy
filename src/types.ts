@@ -36,6 +36,7 @@ export interface DeployConfig {
   nodeVersion: string;
   port?: number;
   proxy?: ProxyConfig;
+  startArgs?: string[];
 }
 
 /** An SSH connection target derived from a DeployConfig. */
@@ -55,6 +56,7 @@ export interface RemoteApp {
   installCmd: string[];
   buildCmd: string[] | null;
   startCmd: string[];
+  startArgs: string[];
 }
 
 export type PM2Status =

@@ -60,6 +60,17 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
     throw new Error("nodeploy.yml: \"port\" must be a number");
   }
 
+  if (candidate.start_args !== undefined) {
+    if (
+      !Array.isArray(candidate.start_args) ||
+      !candidate.start_args.every((a) => typeof a === "string")
+    ) {
+      throw new Error(
+        "nodeploy.yml: \"start_args\" must be an array of strings",
+      );
+    }
+  }
+
   if (
     candidate.node_version !== undefined &&
     typeof candidate.node_version !== "string"
@@ -101,6 +112,7 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
       (candidate.node_version as string | undefined) ?? DEFAULT_NODE_VERSION,
     port: candidate.port as number | undefined,
     proxy,
+    startArgs: candidate.start_args as string[] | undefined,
   };
 
   return config;

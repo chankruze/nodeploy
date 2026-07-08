@@ -28,5 +28,6 @@ export async function resolveRemoteApp(
     installCmd: resolveInstallCmd(packageManager),
     buildCmd,
     startCmd,
+    startArgs: config.startArgs ?? [],
   };
 }

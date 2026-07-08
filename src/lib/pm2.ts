@@ -68,10 +68,12 @@ export class SSHPM2Adapter implements PM2Adapter {
     }
 
     const scriptName = app.startCmd[app.startCmd.length - 1];
+    const extraArgs =
+      app.startArgs.length > 0 ? ` -- ${app.startArgs.join(" ")}` : "";
     await sshExec(
       this.target,
       withNvm(
-        `cd "${app.dir}" && pm2 start npm --name "${app.name}" -- run ${scriptName}`,
+        `cd "${app.dir}" && pm2 start npm --name "${app.name}" -- run ${scriptName}${extraArgs}`,
       ),
     );
     await this.save();

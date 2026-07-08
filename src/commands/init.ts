@@ -31,6 +31,11 @@ ssh:
 # nvm version/alias to install if node is missing on the server (used by nodeploy setup).
 # node_version: 22
 
+# Extra flags appended to the detected start/preview script, e.g. to bind
+# the app to all interfaces instead of just localhost.
+# start_args:
+#   - --host
+
 # Uncomment to front the app with an nginx reverse proxy.
 # port: 3000
 # proxy:
