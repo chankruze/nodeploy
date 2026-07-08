@@ -130,27 +130,31 @@ ssh:
 # port and proxy are optional — set both together to front the app with nginx
 # port: 3001
 # proxy:
-#   host: inventory-api.local
+#   host: inventory-api.internal
 ```
 
 `service`, `repo`, `server`, and `ssh.user` are required. `port` is required when `proxy` is set on a Node process app (`nestjs`/`nextjs`/`express`/`generic`). Static apps (`vite`/`cra`) don't use `port` at all — they're served straight from disk by nginx — but still need `proxy.host` set, since that's the only way to reach a static app (there's no PM2 process, so there's no `<ip>:<port>` fallback for them).
 
-Since domain resolution for `.local`-style hosts isn't handled by nodeploy, after a deploy with `proxy` configured you'll need to point that hostname at the server yourself — e.g. add `<server-ip> inventory-api.local` to `/etc/hosts` on machines that need to reach it, or use real DNS if the server has a public IP and domain.
+`proxy.host` can be anything — it's just the nginx `server_name`, resolved via a manual `/etc/hosts` entry (see below) or real DNS if the server has a public IP and domain. A natural pattern when running several apps on one server is `<app-name>.<hostname>`, e.g. `my-app.beepl-office-server-2`, or a shorter fake-TLD like `my-app.internal`/`my-app.lan`. **Avoid `.local`** — it's reserved for mDNS/Bonjour (RFC 6762), and macOS/Linux (avahi) will try multicast DNS resolution for that suffix first, which can make lookups slow or flaky, or ignore your `/etc/hosts` entry depending on `nsswitch.conf` ordering.
 
 ### Reaching the app after deploy
 
-`nodeploy deploy` prints the `proxy.host` it configured, but doesn't touch your local machine's `/etc/hosts` — do that yourself, once per machine that needs to reach the app:
+`nodeploy deploy` prints exactly how to reach the app, right after it finishes:
+
+- If `proxy` is set, it prints a `curl -H "Host: <proxy.host>" http://<server>/` command that works immediately — nginx routes on the `Host` header, not DNS, so this verifies the deploy without touching anything on your machine.
+- It also prints the `/etc/hosts` line to add for normal browser access (see below) — do that once per machine that needs to reach the app via the hostname.
+- If there's no `proxy` (a plain PM2 app with `port` set), it prints the direct `http://<server-ip>:<port>` URL instead — no hosts/DNS setup needed at all in that case.
 
 ```sh
 # macOS/Linux (needs sudo to edit /etc/hosts)
-echo "<server-ip> inventory-api.local" | sudo tee -a /etc/hosts
+echo "<server-ip> inventory-api.internal" | sudo tee -a /etc/hosts
 
 # Windows (run as Administrator, edit with a text editor)
 # C:\Windows\System32\drivers\etc\hosts
-#   <server-ip> inventory-api.local
+#   <server-ip> inventory-api.internal
 ```
 
-Then visit `http://inventory-api.local` (no port needed — nginx listens on 80 and either proxies to the app or, for static `vite`/`cra` apps, serves the build output directly). If the entry is ever wrong or stale, edit/remove that line — nodeploy never manages `/etc/hosts` for you.
+Then visit `http://inventory-api.internal` (no port needed — nginx listens on 80 and either proxies to the app or, for static `vite`/`cra` apps, serves the build output directly). If the entry is ever wrong or stale, edit/remove that line — nodeploy never manages `/etc/hosts` for you.
 
 ## Supported app types (auto-detected)
 

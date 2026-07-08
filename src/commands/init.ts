@@ -39,7 +39,7 @@ ssh:
 # Uncomment to front the app with an nginx reverse proxy.
 # port: 3000
 # proxy:
-#   host: my-app.local
+#   host: my-app.internal
 `;
 
 export function registerInitCommand(program: Command): void {

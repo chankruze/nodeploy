@@ -8,6 +8,24 @@ import { createPM2Adapter } from "../lib/pm2.js";
 import { resolveRemoteApp } from "../lib/remoteApp.js";
 import { withNvm } from "../lib/remoteEnv.js";
 import { sshExec, sshTest } from "../lib/ssh.js";
+import type { DeployConfig } from "../types.js";
+
+/** Prints how to reach the app right now, before any local DNS/hosts setup. */
+function printAccessInfo(config: DeployConfig): void {
+  if (config.proxy) {
+    info(
+      `Verify it's up right now (no DNS/hosts changes needed): curl -H "Host: ${config.proxy.host}" http://${config.server}/`,
+    );
+    info(
+      `To browse it normally, add "${config.server} ${config.proxy.host}" to your local /etc/hosts, then visit http://${config.proxy.host}`,
+    );
+    return;
+  }
+
+  if (config.port) {
+    info(`Reachable directly at http://${config.server}:${config.port}`);
+  }
+}
 
 export function registerDeployCommand(program: Command): void {
   program
@@ -71,9 +89,7 @@ export function registerDeployCommand(program: Command): void {
         );
 
         success(`${config.service} deployed`);
-        info(
-          `Add "${config.server} ${config.proxy.host}" to your local /etc/hosts to access it at http://${config.proxy.host}`,
-        );
+        printAccessInfo(config);
         return;
       }
 
@@ -97,11 +113,6 @@ export function registerDeployCommand(program: Command): void {
       }
 
       success(`${config.service} deployed`);
-
-      if (config.proxy) {
-        info(
-          `Add "${config.server} ${config.proxy.host}" to your local /etc/hosts to access it at http://${config.proxy.host}`,
-        );
-      }
+      printAccessInfo(config);
     });
 }
