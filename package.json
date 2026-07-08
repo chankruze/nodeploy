@@ -1,7 +1,7 @@
 {
   "name": "nodeploy",
   "version": "0.1.0",
-  "description": "A lightweight, self-hosted deployment CLI for running multiple Node.js apps behind PM2",
+  "description": "A lightweight, self-hosted CLI for deploying a Node.js app to a bare-metal server over SSH, behind PM2",
   "type": "module",
   "bin": {
     "nodeploy": "./dist/cli.js"
@@ -13,6 +13,7 @@
     "node": ">=18"
   },
   "scripts": {
+    "prepare": "tsup",
     "build": "tsup",
     "dev": "tsup --watch",
     "test": "vitest run",
