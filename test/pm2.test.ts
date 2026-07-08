@@ -106,11 +106,12 @@ describe("SSHPM2Adapter", () => {
     );
   });
 
-  it("start() calls restart instead when the app is already running", async () => {
+  it("start() deletes and recreates the process when already running, so a changed start_script/start_args always takes effect", async () => {
     execa.mockResolvedValueOnce({
       stdout: JSON.stringify([jlistProcess()]),
     }); // list()
-    execa.mockResolvedValueOnce({}); // restart
+    execa.mockResolvedValueOnce({}); // delete
+    execa.mockResolvedValueOnce({}); // start
     execa.mockResolvedValueOnce({}); // save
 
     const adapter = new SSHPM2Adapter(target);
@@ -119,11 +120,22 @@ describe("SSHPM2Adapter", () => {
     expect(execa).toHaveBeenNthCalledWith(
       2,
       "ssh",
-      ["-p", "22", "root@203.0.113.10", withNvm('pm2 restart "api"')],
+      ["-p", "22", "root@203.0.113.10", withNvm('pm2 delete "api"')],
       {},
     );
     expect(execa).toHaveBeenNthCalledWith(
       3,
+      "ssh",
+      [
+        "-p",
+        "22",
+        "root@203.0.113.10",
+        withNvm('cd "~/apps/api" && pm2 start npm --name "api" -- run start'),
+      ],
+      {},
+    );
+    expect(execa).toHaveBeenNthCalledWith(
+      4,
       "ssh",
       ["-p", "22", "root@203.0.113.10", withNvm("pm2 save")],
       {},

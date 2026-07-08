@@ -62,9 +62,10 @@ export class SSHPM2Adapter implements PM2Adapter {
   async start(app: RemoteApp): Promise<void> {
     const existing = await this.list();
     if (existing.some((p) => p.name === app.name)) {
-      await this.restart(app.name);
-      await this.save();
-      return;
+      // `pm2 restart` re-runs whatever script the process was originally
+      // started with — it won't pick up a changed start_script/start_args.
+      // Delete and recreate so this deploy's resolved command always wins.
+      await this.delete(app.name);
     }
 
     const scriptName = app.startCmd[app.startCmd.length - 1];
