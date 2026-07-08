@@ -1,64 +1,70 @@
-import fs from "node:fs";
-import os from "node:os";
-import { execa } from "execa";
-import type { DoctorCheckResult, GlobalConfig } from "../types.js";
+import { sshExec, sshTest } from "./ssh.js";
+import type { DeployConfig, DoctorCheckResult, SSHTarget } from "../types.js";
 
-export async function checkNode(): Promise<DoctorCheckResult> {
-  return {
-    name: "Node",
-    ok: true,
-    message: process.version,
-  };
+export async function checkSSHConnection(
+  target: SSHTarget,
+): Promise<DoctorCheckResult> {
+  const ok = await sshTest(target);
+  return ok
+    ? { name: "SSH", ok: true, message: `connected to ${target.host}` }
+    : {
+        name: "SSH",
+        ok: false,
+        message: `could not connect to ${target.user}@${target.host}:${target.port}`,
+      };
 }
 
-export async function checkPackageManager(
-  name: "npm" | "pnpm",
+async function checkRemoteBinary(
+  target: SSHTarget,
+  name: string,
+  versionArgs: string,
+  opts: { optional?: boolean; hint?: string } = {},
 ): Promise<DoctorCheckResult> {
   try {
-    const { stdout } = await execa(name, ["--version"]);
+    const { stdout } = await sshExec(target, `${name} ${versionArgs}`);
     return { name, ok: true, message: stdout.trim() };
   } catch {
     return {
       name,
       ok: false,
-      message: `${name} not found on PATH`,
-      optional: name === "pnpm",
+      message: opts.hint ?? `${name} not found on remote PATH`,
+      optional: opts.optional,
     };
   }
 }
 
-export async function checkPM2(): Promise<DoctorCheckResult> {
-  try {
-    const { stdout } = await execa("pm2", ["--version"]);
-    return { name: "PM2", ok: true, message: stdout.trim() };
-  } catch {
-    return {
-      name: "PM2",
-      ok: false,
-      message: "pm2 not found on PATH — install with `npm i -g pm2`",
-    };
-  }
+export function checkNode(target: SSHTarget): Promise<DoctorCheckResult> {
+  return checkRemoteBinary(target, "node", "--version");
 }
 
-export async function checkNginx(): Promise<DoctorCheckResult> {
-  try {
-    const { stdout } = await execa("nginx", ["-v"]);
-    return { name: "nginx", ok: true, message: stdout.trim(), optional: true };
-  } catch {
-    return {
-      name: "nginx",
-      ok: false,
-      message: "nginx not found on PATH (optional for PM2-only setups)",
-      optional: true,
-    };
-  }
+export function checkNpm(target: SSHTarget): Promise<DoctorCheckResult> {
+  return checkRemoteBinary(target, "npm", "--version");
 }
 
-export async function checkDiskSpace(): Promise<DoctorCheckResult> {
+export function checkPnpm(target: SSHTarget): Promise<DoctorCheckResult> {
+  return checkRemoteBinary(target, "pnpm", "--version", { optional: true });
+}
+
+export function checkPM2(target: SSHTarget): Promise<DoctorCheckResult> {
+  return checkRemoteBinary(target, "pm2", "--version", {
+    hint: "pm2 not found on remote PATH — install with `npm i -g pm2`",
+  });
+}
+
+export function checkNginx(target: SSHTarget): Promise<DoctorCheckResult> {
+  return checkRemoteBinary(target, "nginx", "-v", {
+    optional: true,
+    hint: "nginx not found on remote PATH (optional unless using proxy)",
+  });
+}
+
+export async function checkDiskSpace(
+  target: SSHTarget,
+): Promise<DoctorCheckResult> {
   try {
-    const { stdout } = await execa("df", ["-h", os.homedir()]);
+    const { stdout } = await sshExec(target, "df -h $HOME");
     const lastLine = stdout.trim().split("\n").pop() ?? "";
-    return { name: "Disk", ok: true, message: lastLine.trim() };
+    return { name: "Disk", ok: true, message: lastLine.trim(), optional: true };
   } catch (error) {
     return {
       name: "Disk",
@@ -69,49 +75,89 @@ export async function checkDiskSpace(): Promise<DoctorCheckResult> {
   }
 }
 
-export async function checkMemory(): Promise<DoctorCheckResult> {
-  const freeGb = os.freemem() / 1024 ** 3;
-  const totalGb = os.totalmem() / 1024 ** 3;
-  return {
-    name: "RAM",
-    ok: true,
-    message: `${freeGb.toFixed(1)}GB free / ${totalGb.toFixed(1)}GB total`,
-  };
-}
-
-export async function checkAppsDirWritable(
-  appsDir: string,
+export async function checkMemory(
+  target: SSHTarget,
 ): Promise<DoctorCheckResult> {
   try {
-    if (!fs.existsSync(appsDir)) {
-      return {
-        name: "Apps directory",
-        ok: false,
-        message: `${appsDir} does not exist — run \`nodeploy init\``,
-      };
-    }
-    fs.accessSync(appsDir, fs.constants.W_OK);
-    return { name: "Apps directory", ok: true, message: appsDir };
+    const { stdout } = await sshExec(target, "free -h");
+    const memLine = stdout
+      .trim()
+      .split("\n")
+      .find((line) => line.startsWith("Mem:"));
+    return {
+      name: "RAM",
+      ok: true,
+      message: memLine?.trim() ?? stdout.trim(),
+      optional: true,
+    };
+  } catch (error) {
+    return {
+      name: "RAM",
+      ok: false,
+      message: error instanceof Error ? error.message : String(error),
+      optional: true,
+    };
+  }
+}
+
+export async function checkDeployPathWritable(
+  target: SSHTarget,
+  deployPath: string,
+): Promise<DoctorCheckResult> {
+  try {
+    await sshExec(
+      target,
+      `mkdir -p "${deployPath}" && test -w "${deployPath}"`,
+    );
+    return { name: "Deploy path", ok: true, message: deployPath };
   } catch {
     return {
-      name: "Apps directory",
+      name: "Deploy path",
       ok: false,
-      message: `${appsDir} is not writable`,
+      message: `${deployPath} is not writable`,
+    };
+  }
+}
+
+export async function checkPasswordlessSudo(
+  target: SSHTarget,
+): Promise<DoctorCheckResult> {
+  try {
+    await sshExec(target, "sudo -n true");
+    return { name: "sudo", ok: true, message: "passwordless sudo available" };
+  } catch {
+    return {
+      name: "sudo",
+      ok: false,
+      message:
+        "passwordless sudo not available — required to write nginx config for `proxy`",
     };
   }
 }
 
 export async function runAllChecks(
-  config: GlobalConfig,
+  config: DeployConfig,
+  target: SSHTarget,
 ): Promise<DoctorCheckResult[]> {
-  return Promise.all([
-    checkNode(),
-    checkPackageManager("npm"),
-    checkPackageManager("pnpm"),
-    checkPM2(),
-    checkNginx(),
-    checkDiskSpace(),
-    checkMemory(),
-    checkAppsDirWritable(config.appsDir),
-  ]);
+  const connection = await checkSSHConnection(target);
+  if (!connection.ok) {
+    return [connection];
+  }
+
+  const checks = [
+    checkNode(target),
+    checkNpm(target),
+    checkPnpm(target),
+    checkPM2(target),
+    checkNginx(target),
+    checkDiskSpace(target),
+    checkMemory(target),
+    checkDeployPathWritable(target, config.deployPath),
+  ];
+
+  if (config.proxy) {
+    checks.push(checkPasswordlessSudo(target));
+  }
+
+  return [connection, ...(await Promise.all(checks))];
 }

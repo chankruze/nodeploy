@@ -1,35 +1,40 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  detectPackageManager,
-  resolveInstallCmd,
-} from "../src/lib/packageManager.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { SSHTarget } from "../src/types.js";
 
-describe("detectPackageManager", () => {
-  let tmpDir: string;
+const { execa } = vi.hoisted(() => ({ execa: vi.fn() }));
 
+vi.mock("execa", () => ({ execa }));
+
+const { detectRemotePackageManager, resolveInstallCmd } = await import(
+  "../src/lib/packageManager.js"
+);
+
+const target: SSHTarget = {
+  host: "203.0.113.10",
+  user: "root",
+  port: 22,
+};
+
+describe("detectRemotePackageManager", () => {
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nodeploy-pm-"));
+    execa.mockReset();
   });
 
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+  it("returns pnpm when the remote pnpm-lock.yaml exists", async () => {
+    execa.mockResolvedValueOnce({});
+    const result = await detectRemotePackageManager(target, "~/apps/api");
+    expect(result).toBe("pnpm");
+    expect(execa).toHaveBeenCalledWith(
+      "ssh",
+      ["-p", "22", "root@203.0.113.10", 'test -f "~/apps/api/pnpm-lock.yaml"'],
+      {},
+    );
   });
 
-  it("returns pnpm when pnpm-lock.yaml exists", () => {
-    fs.writeFileSync(path.join(tmpDir, "pnpm-lock.yaml"), "");
-    expect(detectPackageManager(tmpDir)).toBe("pnpm");
-  });
-
-  it("returns npm when no pnpm-lock.yaml exists", () => {
-    expect(detectPackageManager(tmpDir)).toBe("npm");
-  });
-
-  it("returns npm when only package-lock.json exists", () => {
-    fs.writeFileSync(path.join(tmpDir, "package-lock.json"), "");
-    expect(detectPackageManager(tmpDir)).toBe("npm");
+  it("returns npm when the remote pnpm-lock.yaml does not exist", async () => {
+    execa.mockRejectedValueOnce(new Error("exit 1"));
+    const result = await detectRemotePackageManager(target, "~/apps/api");
+    expect(result).toBe("npm");
   });
 });
 

@@ -1,24 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { DetectedApp } from "../src/types.js";
+import type { RemoteApp, SSHTarget } from "../src/types.js";
 
 const { execa } = vi.hoisted(() => ({ execa: vi.fn() }));
 
 vi.mock("execa", () => ({ execa }));
 
-const { ExecaPM2Adapter } = await import("../src/lib/pm2.js");
+const { SSHPM2Adapter } = await import("../src/lib/pm2.js");
 
-function makeApp(overrides: Partial<DetectedApp> = {}): DetectedApp {
+const target: SSHTarget = {
+  host: "203.0.113.10",
+  user: "root",
+  port: 22,
+};
+
+function makeApp(overrides: Partial<RemoteApp> = {}): RemoteApp {
   return {
     name: "api",
-    dir: "/apps/api",
-    port: 3000,
+    dir: "~/apps/api",
     type: "express",
     packageManager: "npm",
     installCmd: ["npm", "install"],
     buildCmd: null,
     startCmd: ["run", "start"],
-    pkg: {},
-    hasNodeployConfig: true,
     ...overrides,
   };
 }
@@ -37,7 +40,7 @@ function jlistProcess(overrides: Record<string, unknown> = {}) {
   };
 }
 
-describe("ExecaPM2Adapter", () => {
+describe("SSHPM2Adapter", () => {
   beforeEach(() => {
     execa.mockReset();
   });
@@ -46,15 +49,25 @@ describe("ExecaPM2Adapter", () => {
     execa.mockResolvedValueOnce({ stdout: "[]" }); // list()
     execa.mockResolvedValueOnce({}); // start
 
-    const adapter = new ExecaPM2Adapter();
+    const adapter = new SSHPM2Adapter(target);
     await adapter.start(makeApp({ startCmd: ["run", "start:prod"] }));
 
-    expect(execa).toHaveBeenNthCalledWith(1, "pm2", ["jlist"]);
+    expect(execa).toHaveBeenNthCalledWith(
+      1,
+      "ssh",
+      ["-p", "22", "root@203.0.113.10", "pm2 jlist"],
+      {},
+    );
     expect(execa).toHaveBeenNthCalledWith(
       2,
-      "pm2",
-      ["start", "npm", "--name", "api", "--", "run", "start:prod"],
-      { cwd: "/apps/api" },
+      "ssh",
+      [
+        "-p",
+        "22",
+        "root@203.0.113.10",
+        'cd "~/apps/api" && pm2 start npm --name "api" -- run start:prod',
+      ],
+      {},
     );
   });
 
@@ -64,28 +77,45 @@ describe("ExecaPM2Adapter", () => {
     }); // list()
     execa.mockResolvedValueOnce({}); // restart
 
-    const adapter = new ExecaPM2Adapter();
+    const adapter = new SSHPM2Adapter(target);
     await adapter.start(makeApp());
 
-    expect(execa).toHaveBeenNthCalledWith(2, "pm2", ["restart", "api"]);
+    expect(execa).toHaveBeenNthCalledWith(
+      2,
+      "ssh",
+      ["-p", "22", "root@203.0.113.10", 'pm2 restart "api"'],
+      {},
+    );
   });
 
   it("restart() calls pm2 restart", async () => {
     execa.mockResolvedValueOnce({});
-    await new ExecaPM2Adapter().restart("api");
-    expect(execa).toHaveBeenCalledWith("pm2", ["restart", "api"]);
+    await new SSHPM2Adapter(target).restart("api");
+    expect(execa).toHaveBeenCalledWith(
+      "ssh",
+      ["-p", "22", "root@203.0.113.10", 'pm2 restart "api"'],
+      {},
+    );
   });
 
   it("stop() calls pm2 stop", async () => {
     execa.mockResolvedValueOnce({});
-    await new ExecaPM2Adapter().stop("api");
-    expect(execa).toHaveBeenCalledWith("pm2", ["stop", "api"]);
+    await new SSHPM2Adapter(target).stop("api");
+    expect(execa).toHaveBeenCalledWith(
+      "ssh",
+      ["-p", "22", "root@203.0.113.10", 'pm2 stop "api"'],
+      {},
+    );
   });
 
   it("delete() calls pm2 delete", async () => {
     execa.mockResolvedValueOnce({});
-    await new ExecaPM2Adapter().delete("api");
-    expect(execa).toHaveBeenCalledWith("pm2", ["delete", "api"]);
+    await new SSHPM2Adapter(target).delete("api");
+    expect(execa).toHaveBeenCalledWith(
+      "ssh",
+      ["-p", "22", "root@203.0.113.10", 'pm2 delete "api"'],
+      {},
+    );
   });
 
   it("list() maps pm2 jlist output into PM2ProcessInfo", async () => {
@@ -93,7 +123,7 @@ describe("ExecaPM2Adapter", () => {
       stdout: JSON.stringify([jlistProcess()]),
     });
 
-    const result = await new ExecaPM2Adapter().list();
+    const result = await new SSHPM2Adapter(target).list();
 
     expect(result).toEqual([
       {
@@ -115,28 +145,28 @@ describe("ExecaPM2Adapter", () => {
       ]),
     });
 
-    const result = await new ExecaPM2Adapter().list();
+    const result = await new SSHPM2Adapter(target).list();
     expect(result[0].status).toBe("unknown");
   });
 
   it("logs() streams via inherited stdio and passes --lines when provided", async () => {
     execa.mockResolvedValueOnce({});
-    await new ExecaPM2Adapter().logs("api", { lines: 50 });
+    await new SSHPM2Adapter(target).logs("api", { lines: 50 });
 
     expect(execa).toHaveBeenCalledWith(
-      "pm2",
-      ["logs", "api", "--lines", "50"],
+      "ssh",
+      ["-p", "22", "root@203.0.113.10", 'pm2 logs "api" --lines 50'],
       { stdio: "inherit" },
     );
   });
 
   it("isInstalled() returns true when pm2 --version resolves", async () => {
     execa.mockResolvedValueOnce({});
-    await expect(new ExecaPM2Adapter().isInstalled()).resolves.toBe(true);
+    await expect(new SSHPM2Adapter(target).isInstalled()).resolves.toBe(true);
   });
 
   it("isInstalled() returns false when pm2 --version rejects", async () => {
     execa.mockRejectedValueOnce(new Error("command not found"));
-    await expect(new ExecaPM2Adapter().isInstalled()).resolves.toBe(false);
+    await expect(new SSHPM2Adapter(target).isInstalled()).resolves.toBe(false);
   });
 });

@@ -1,8 +1,8 @@
-import { execa } from "execa";
-import type { DetectedApp, PM2ProcessInfo, PM2Status } from "../types.js";
+import { sshExec } from "./ssh.js";
+import type { PM2ProcessInfo, PM2Status, RemoteApp, SSHTarget } from "../types.js";
 
 export interface PM2Adapter {
-  start(app: DetectedApp): Promise<void>;
+  start(app: RemoteApp): Promise<void>;
   restart(name: string): Promise<void>;
   stop(name: string): Promise<void>;
   delete(name: string): Promise<void>;
@@ -54,8 +54,10 @@ function toProcessInfo(raw: PM2RawProcess): PM2ProcessInfo {
   };
 }
 
-export class ExecaPM2Adapter implements PM2Adapter {
-  async start(app: DetectedApp): Promise<void> {
+export class SSHPM2Adapter implements PM2Adapter {
+  constructor(private readonly target: SSHTarget) {}
+
+  async start(app: RemoteApp): Promise<void> {
     const existing = await this.list();
     if (existing.some((p) => p.name === app.name)) {
       await this.restart(app.name);
@@ -63,42 +65,40 @@ export class ExecaPM2Adapter implements PM2Adapter {
     }
 
     const scriptName = app.startCmd[app.startCmd.length - 1];
-    await execa(
-      "pm2",
-      ["start", "npm", "--name", app.name, "--", "run", scriptName],
-      { cwd: app.dir },
+    await sshExec(
+      this.target,
+      `cd "${app.dir}" && pm2 start npm --name "${app.name}" -- run ${scriptName}`,
     );
   }
 
   async restart(name: string): Promise<void> {
-    await execa("pm2", ["restart", name]);
+    await sshExec(this.target, `pm2 restart "${name}"`);
   }
 
   async stop(name: string): Promise<void> {
-    await execa("pm2", ["stop", name]);
+    await sshExec(this.target, `pm2 stop "${name}"`);
   }
 
   async delete(name: string): Promise<void> {
-    await execa("pm2", ["delete", name]);
+    await sshExec(this.target, `pm2 delete "${name}"`);
   }
 
   async list(): Promise<PM2ProcessInfo[]> {
-    const { stdout } = await execa("pm2", ["jlist"]);
+    const { stdout } = await sshExec(this.target, "pm2 jlist");
     const raw: PM2RawProcess[] = JSON.parse(stdout);
     return raw.map(toProcessInfo);
   }
 
   async logs(name: string, opts: { lines?: number } = {}): Promise<void> {
-    const args = ["logs", name];
-    if (opts.lines !== undefined) {
-      args.push("--lines", String(opts.lines));
-    }
-    await execa("pm2", args, { stdio: "inherit" });
+    const lines = opts.lines !== undefined ? ` --lines ${opts.lines}` : "";
+    await sshExec(this.target, `pm2 logs "${name}"${lines}`, {
+      stdio: "inherit",
+    });
   }
 
   async isInstalled(): Promise<boolean> {
     try {
-      await execa("pm2", ["--version"]);
+      await sshExec(this.target, "pm2 --version");
       return true;
     } catch {
       return false;
@@ -106,6 +106,6 @@ export class ExecaPM2Adapter implements PM2Adapter {
   }
 }
 
-export function createPM2Adapter(): PM2Adapter {
-  return new ExecaPM2Adapter();
+export function createPM2Adapter(target: SSHTarget): PM2Adapter {
+  return new SSHPM2Adapter(target);
 }
