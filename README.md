@@ -1,6 +1,6 @@
 # nodeploy
 
-A lightweight, self-hosted deployment CLI for shipping a Node.js app to a bare-metal server or VPS over SSH, in the spirit of [Kamal](https://kamal-deploy.org/) but without Docker. Run `nodeploy deploy` from your app's repo and it SSHes in, pulls the latest code, installs/builds it, and (re)starts it under [PM2](https://pm2.keymetrics.io/) — replacing the manual "push, ssh, cd, git pull, restart" loop. An optional nginx reverse proxy lets you reach the app at a hostname instead of `<ip>:<port>`.
+A lightweight, self-hosted deployment CLI for shipping a Node.js or Python app to a bare-metal server or VPS over SSH, in the spirit of [Kamal](https://kamal-deploy.org/) but without Docker. Run `nodeploy deploy` from your app's repo and it SSHes in, pulls the latest code, installs/builds it, and (re)starts it under [PM2](https://pm2.keymetrics.io/) — replacing the manual "push, ssh, cd, git pull, restart" loop. An optional nginx reverse proxy lets you reach the app at a hostname instead of `<ip>:<port>`.
 
 ## Install
 
@@ -112,6 +112,9 @@ ssh:
 
 # deploy_path: ~/apps/inventory-api          # optional, default ~/apps/<service>
 
+# runtime: node                               # optional, default "node" — set to "python"
+                                              # to deploy a Python app instead (see below)
+
 # node_version: 22                            # optional, default "22" — nvm version/alias
                                               # `nodeploy setup` installs if node is missing
 
@@ -142,6 +145,36 @@ Auto-detection resolves a start command purely from `package.json`'s `scripts`/`
 
 Set `start_script` in `nodeploy.yml` to force a specific script name; nodeploy still runs `build` first if one exists, but starts (and keeps running under PM2) whatever script you name instead of the auto-detected one. This intentionally doesn't change app-type *detection* — it only overrides which script gets executed.
 
+### Deploying a Python app
+
+Set `runtime: python` and `entry: <script>.py` in `nodeploy.yml`:
+
+```yaml
+service: inventory-tool
+repo: git@github.com:you/inventory-tool.git
+server: 203.0.113.10
+ssh:
+  user: root
+runtime: python
+entry: server.py
+port: 8789          # only needed if your app reads its bind port from $PORT
+proxy:
+  host: inventory-tool.internal
+```
+
+`nodeploy deploy` then, on the server:
+
+1. Creates a dedicated virtualenv at `<deploy_path>/.venv` — every Python app gets one, even with zero dependencies, for isolation from the system interpreter and other apps.
+2. If `requirements.txt` or `pyproject.toml` exists in the repo, installs it into that venv (`requirements.txt` takes precedence if both are present). A pure-stdlib app with neither file (e.g. one built on `http.server`) just gets the empty venv.
+3. Starts `entry` under PM2 using the venv's own `python3` as the PM2 interpreter (`pm2 start entry --interpreter <venv>/bin/python3`), so it gets the same crash-restart and reboot-survival (`pm2 save` + `pm2 startup systemd`) as a Node app.
+4. If `port` is set, exports it as `PORT` before starting — handy for apps (like a plain `http.server`/`ThreadingHTTPServer` script) that read their bind port from the environment. If your app hardcodes a port instead, leave this to the app and just point `proxy`/`port` at whatever it's bound to.
+
+Detection (`flask` vs plain `python`) is a best-effort scan of whichever manifest exists for a `flask` dependency marker — it only affects `nodeploy status`'s reporting, not how the app is started or supervised, since both types run identically under PM2.
+
+Same as with Node apps, apps bound to `127.0.0.1` work fine here since nginx and the app share the same server — only change your app's bind host if you need to reach it directly on `<ip>:<port>` without nginx in front.
+
+**Not yet supported:** FastAPI (or any ASGI app needing a real WSGI/ASGI server like `gunicorn`/`uvicorn` in front) — planned, but `nodeploy` currently only knows how to invoke a script directly via `pm2 start <entry> --interpreter python3`, which is enough for Flask's built-in dev server and plain stdlib servers but not for a production ASGI stack.
+
 ### Reaching the app after deploy
 
 `nodeploy deploy` prints exactly how to reach the app, right after it finishes:
@@ -163,7 +196,7 @@ Then visit `http://inventory-api.internal` (no port needed — nginx listens on 
 
 ## Supported app types (auto-detected)
 
-Detection reads the remote `package.json`'s scripts and dependencies — no configuration needed.
+For `runtime: node` (the default), detection reads the remote `package.json`'s scripts and dependencies — no configuration needed.
 
 | Type | Scripts required | Dependency marker | Runtime |
 |---|---|---|---|
@@ -181,16 +214,24 @@ Because there's no PM2 process for a static app, `restart`/`stop`/`logs` don't a
 
 Package manager (`npm` vs `pnpm`) is chosen automatically based on whether the app has a `pnpm-lock.yaml` on the server.
 
+For `runtime: python`, there's no `package.json`-equivalent to key off, so detection is a best-effort scan of `requirements.txt`/`pyproject.toml` (whichever exists) for a `flask` marker — this only affects labeling, both types run identically under PM2 in a venv (see [Deploying a Python app](#deploying-a-python-app)):
+
+| Type | Manifest marker | Runtime |
+|---|---|---|
+| Flask | `flask` in `requirements.txt`/`pyproject.toml` | PM2 (venv) |
+| python | anything else, including no manifest at all (e.g. pure `http.server`) | PM2 (venv) |
+
 ## What `nodeploy setup` does
 
 Run once per app per server, before the first deploy (safe to re-run — every step checks first and skips if already satisfied):
 
 1. Checks the SSH connection to `server`.
 2. Installs `git` via `apt` if missing. **Requires passwordless sudo** — if unavailable, warns and continues (install `git` manually, then re-run `setup`).
-3. Installs [nvm](https://github.com/nvm-sh/nvm) (if needed) and Node.js via `nvm install <node_version>` (default `22`) if `node` isn't already on the server's `PATH`. This installs into the SSH user's home directory — **no sudo required**.
+3. Installs [nvm](https://github.com/nvm-sh/nvm) (if needed) and Node.js via `nvm install <node_version>` (default `22`) if `node` isn't already on the server's `PATH`. This installs into the SSH user's home directory — **no sudo required**. Runs regardless of `runtime`, since PM2 itself (the step below) is a Node package.
 4. Installs PM2 globally via `npm install -g pm2` if missing (also no sudo — nvm's npm installs into the nvm-managed Node's own directory), then tries to register it with `pm2 startup systemd` so PM2-managed apps survive a server reboot. **The `pm2 startup` step requires passwordless sudo**; if unavailable, warns and continues — the app still runs, it just won't come back automatically after a reboot until you fix sudo access and re-run `setup`.
-5. If `proxy` is configured in `nodeploy.yml`, installs and starts `nginx` via `apt`. **Requires passwordless sudo**; warns and continues if unavailable.
-6. Creates `deploy_path` if it doesn't exist yet.
+5. If `runtime: python` is set, installs `python3`/`python3-venv`/`python3-pip` via `apt` if the venv module isn't already importable. **Requires passwordless sudo**; warns and continues if unavailable.
+6. If `proxy` is configured in `nodeploy.yml`, installs and starts `nginx` via `apt`. **Requires passwordless sudo**; warns and continues if unavailable.
+7. Creates `deploy_path` if it doesn't exist yet.
 
 This targets Ubuntu/Debian (`apt`, `systemd`) — tested against Ubuntu LTS. Other distros aren't supported by `setup` yet; install prerequisites manually and `nodeploy doctor`/`deploy` will still work.
 
@@ -200,24 +241,26 @@ Run every time you ship a change (after `setup` has run at least once):
 
 1. Checks the SSH connection to `server`.
 2. Clones the repo into `deploy_path` if it isn't there yet, otherwise fetches and hard-resets to `origin/<branch>`.
-3. Reads the remote `package.json` to detect the app type and resolve install/build/start commands.
-4. Installs dependencies and runs the build step (if any) on the server.
-5. For static app types (`vite`/`cra`), points nginx directly at the build output directory instead of starting anything under PM2 — no `port` involved. For every other type, starts (or restarts, if already running) the app under PM2 as `service` (appending `start_args`, if set, to the start/preview script), then `pm2 save`s the process list so it's restored on reboot.
-6. If `proxy` is configured (Node process apps only — static apps always write their nginx config in step 5), writes an nginx server block proxying `proxy.host` to `port`, symlinks it into `sites-enabled`, and reloads nginx.
+3. For `runtime: node`, reads the remote `package.json` to detect the app type and resolve install/build/start commands. For `runtime: python`, checks for `requirements.txt`/`pyproject.toml` to resolve the install step and detect `flask` vs plain `python`.
+4. Installs dependencies and runs the build step (if any) on the server. For Python, this creates `deploy_path/.venv` (always, even with nothing to install) and `pip install`s into it if a manifest was found.
+5. For static app types (`vite`/`cra`), points nginx directly at the build output directory instead of starting anything under PM2 — no `port` involved. For every other type, starts (or restarts, if already running) the app under PM2 as `service` — Node apps via `pm2 start npm -- run <script>`, Python apps via `pm2 start <entry> --interpreter <venv>/bin/python3` — (appending `start_args`, if set, and exporting `PORT`, if `port` is set on a Python app), then `pm2 save`s the process list so it's restored on reboot.
+6. If `proxy` is configured (process apps only — static apps always write their nginx config in step 5), writes an nginx server block proxying `proxy.host` to `port`, symlinks it into `sites-enabled`, and reloads nginx.
 
 ## Architecture
 
 - `src/lib/ssh.ts` — the seam everything else is built on: shells out to the system `ssh` binary via `execa` to run a remote command or test connectivity.
 - `src/lib/remoteEnv.ts` — wraps remote commands to source nvm first, so `node`/`npm`/`pm2` resolve in a non-login SSH shell.
-- `src/lib/serverSetup.ts` — idempotent provisioning steps (git/nginx via apt, Node via nvm, PM2 via npm, PM2 boot startup, deploy path creation) used by `nodeploy setup`.
+- `src/lib/serverSetup.ts` — idempotent provisioning steps (git/nginx via apt, Node via nvm, PM2 via npm, PM2 boot startup, Python3/venv via apt, deploy path creation) used by `nodeploy setup`.
 - `src/lib/git.ts` — clones or fetches+resets the app's repo on the server over SSH.
 - `src/lib/nginx.ts` — generates an nginx server block (reverse-proxy for PM2 apps, or static-file `root` for `vite`/`cra`) and pipes it to the server via SSH (`sites-available` → `sites-enabled` → `nginx -t` → reload).
-- `src/lib/deployConfig.ts` — loads and validates `nodeploy.yml` (YAML via the `yaml` package), applying defaults for `branch`/`deploy_path`/`ssh.port`/`node_version`.
-- `src/lib/detector.ts` — pluggable, ordered rule list for app-type detection from a `package.json`, plus `resolveStaticDir` mapping static-output app types (`vite`/`cra`) to their build directory. Adding a new framework means adding a rule here.
-- `src/lib/pm2.ts` — all process management goes through the `PM2Adapter` interface; `SSHPM2Adapter` runs `pm2` subcommands on the server via `sshExec`.
+- `src/lib/deployConfig.ts` — loads and validates `nodeploy.yml` (YAML via the `yaml` package), applying defaults for `branch`/`deploy_path`/`ssh.port`/`node_version`/`runtime`.
+- `src/lib/detector.ts` — pluggable, ordered rule list for Node app-type detection from a `package.json`, plus `resolveStaticDir` mapping static-output app types (`vite`/`cra`) to their build directory. Adding a new JS framework means adding a rule here.
+- `src/lib/pythonDetector.ts` — the Python equivalent: reads `requirements.txt`/`pyproject.toml` (if present) to detect `flask` vs plain `python`, and resolves the venv-creation + `pip install` command.
+- `src/lib/remoteApp.ts` — resolves a `RemoteApp` (the common shape `pm2.ts`/`deploy.ts` consume) by branching on `config.runtime` into the Node or Python resolution path.
+- `src/lib/pm2.ts` — all process management goes through the `PM2Adapter` interface; `SSHPM2Adapter` runs `pm2` subcommands on the server via `sshExec`, branching its `start()` command shape on `RemoteApp.runtime` (`npm run <script>` vs `--interpreter <venv-python>`).
 - `src/lib/doctorChecks.ts` — individual environment health checks, run against the remote server over SSH.
 
-Out of scope for this phase (left as clean extension points, not built): Docker, env/secrets injection, multi-server roles or accessories (databases, etc.), HTTPS/SSL termination, automatic DNS/hosts-file management, non-Debian/Ubuntu `setup` support, and a rollback command.
+Out of scope for this phase (left as clean extension points, not built): Docker, FastAPI/ASGI (`gunicorn`/`uvicorn` in front) support, env/secrets injection, multi-server roles or accessories (databases, etc.), HTTPS/SSL termination, automatic DNS/hosts-file management, non-Debian/Ubuntu `setup` support, and a rollback command.
 
 ## Testing
 
@@ -226,7 +269,7 @@ pnpm test        # vitest
 pnpm typecheck   # tsc --noEmit
 ```
 
-Unit-tested with mocked `execa` calls: app-type detection, package manager detection, `nodeploy.yml` loading/validation, SSH argument building, the git clone/pull command, the nginx server-block template and remote deploy command, the PM2 adapter (argument shapes, status mapping, mocked success/failure), server provisioning steps (git/nvm-Node/PM2/nginx install checks), and doctor checks.
+Unit-tested with mocked `execa` calls: Node app-type detection, Python app-type detection (`flask`/`python` from `requirements.txt`/`pyproject.toml`), package manager detection, `nodeploy.yml` loading/validation (including `runtime`/`entry`), SSH argument building, the git clone/pull command, the nginx server-block template and remote deploy command, the PM2 adapter (argument shapes for both Node and Python start commands, status mapping, mocked success/failure), server provisioning steps (git/nvm-Node/PM2/Python/nginx install checks), and doctor checks.
 
 **Not unit tested** (requires a real server): actual `apt`/nvm/PM2 installs, `pm2 start` process lifecycle, real `git`/`npm`/`pnpm install`/build execution, nginx reload behavior, and full command flows end-to-end. Verify these manually against a toy app and a real VPS:
 

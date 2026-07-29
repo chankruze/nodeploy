@@ -28,6 +28,11 @@ ssh:
 
 # deploy_path: ~/apps/my-app
 
+# runtime: node (default) or python. Python apps run under PM2 in a
+# dedicated venv (created even with no dependencies, for isolation).
+# runtime: python
+# entry: server.py                            # required for runtime: python
+
 # nvm version/alias to install if node is missing on the server (used by nodeploy setup).
 # node_version: 22
 

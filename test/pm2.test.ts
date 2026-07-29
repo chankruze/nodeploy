@@ -19,6 +19,7 @@ function makeApp(overrides: Partial<RemoteApp> = {}): RemoteApp {
     name: "api",
     dir: "~/apps/api",
     type: "express",
+    runtime: "node",
     packageManager: "npm",
     installCmd: ["npm", "install"],
     buildCmd: null,
@@ -104,6 +105,60 @@ describe("SSHPM2Adapter", () => {
       ],
       {},
     );
+  });
+
+  it("start() runs pm2 start with the venv interpreter for a python app", async () => {
+    execa.mockResolvedValueOnce({ stdout: "[]" }); // list()
+    execa.mockResolvedValueOnce({}); // start
+    execa.mockResolvedValueOnce({}); // save
+
+    const adapter = new SSHPM2Adapter(target);
+    await adapter.start(
+      makeApp({
+        runtime: "python",
+        type: "python",
+        packageManager: "pip",
+        startCmd: ["server.py"],
+        interpreter: "~/apps/api/.venv/bin/python3",
+      }),
+    );
+
+    expect(execa).toHaveBeenNthCalledWith(
+      2,
+      "ssh",
+      [
+        "-p",
+        "22",
+        "root@203.0.113.10",
+        withNvm(
+          'cd "~/apps/api" && pm2 start "server.py" --name "api" --interpreter "~/apps/api/.venv/bin/python3"',
+        ),
+      ],
+      {},
+    );
+  });
+
+  it("start() exports env vars before the pm2 start command for a python app", async () => {
+    execa.mockResolvedValueOnce({ stdout: "[]" }); // list()
+    execa.mockResolvedValueOnce({}); // start
+    execa.mockResolvedValueOnce({}); // save
+
+    const adapter = new SSHPM2Adapter(target);
+    await adapter.start(
+      makeApp({
+        runtime: "python",
+        type: "python",
+        packageManager: "pip",
+        startCmd: ["server.py"],
+        interpreter: "~/apps/api/.venv/bin/python3",
+        env: { PORT: "8789" },
+      }),
+    );
+
+    const [, args] = execa.mock.calls[1];
+    const remoteCommand = args[args.length - 1] as string;
+    expect(remoteCommand).toContain('export PORT="8789"; ');
+    expect(remoteCommand).toContain("pm2 start");
   });
 
   it("start() deletes and recreates the process when already running, so a changed start_script/start_args always takes effect", async () => {

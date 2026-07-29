@@ -12,6 +12,7 @@ const {
   ensureNode,
   ensurePM2,
   ensurePM2Startup,
+  ensurePython,
 } = await import("../src/lib/serverSetup.js");
 
 const target: SSHTarget = {
@@ -112,6 +113,22 @@ describe("serverSetup", () => {
   it("ensurePM2Startup propagates failure when sudo is unavailable", async () => {
     execa.mockRejectedValueOnce(new Error("sudo: a password is required"));
     await expect(ensurePM2Startup(target)).rejects.toThrow();
+  });
+
+  it("ensurePython skips install when python3 venv module is already importable", async () => {
+    execa.mockResolvedValueOnce({});
+    const installed = await ensurePython(target);
+    expect(installed).toBe(false);
+    expect(execa).toHaveBeenCalledTimes(1);
+  });
+
+  it("ensurePython installs python3/venv/pip via apt when missing", async () => {
+    execa.mockRejectedValueOnce(new Error("No module named venv"));
+    execa.mockResolvedValueOnce({});
+    const installed = await ensurePython(target);
+    expect(installed).toBe(true);
+    const [, args] = execa.mock.calls[1];
+    expect(args[args.length - 1]).toContain("apt-get install -y python3 python3-venv python3-pip");
   });
 
   it("ensureNginx installs and enables nginx when missing", async () => {

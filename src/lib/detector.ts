@@ -1,11 +1,11 @@
-import type { AppType, PackageJson } from "../types.js";
+import type { JSAppType, PackageJson } from "../types.js";
 
 export interface DetectionContext {
   pkg: PackageJson;
 }
 
 export interface DetectionRule {
-  type: AppType;
+  type: JSAppType;
   matches(ctx: DetectionContext): boolean;
 }
 
@@ -71,7 +71,7 @@ export const detectionRules: DetectionRule[] = [
   },
 ];
 
-export function detectAppType(pkg: PackageJson): AppType {
+export function detectAppType(pkg: PackageJson): JSAppType {
   const ctx: DetectionContext = { pkg };
   const rule = detectionRules.find((r) => r.matches(ctx));
   return rule?.type ?? "generic";
@@ -83,12 +83,12 @@ export function detectAppType(pkg: PackageJson): AppType {
  * (nextjs, remix, express, generic) need a running Node process, so they're
  * always deployed under PM2 instead.
  */
-const STATIC_OUTPUT_DIRS: Partial<Record<AppType, string>> = {
+const STATIC_OUTPUT_DIRS: Partial<Record<JSAppType, string>> = {
   vite: "dist",
   cra: "build",
 };
 
-export function resolveStaticDir(type: AppType): string | null {
+export function resolveStaticDir(type: JSAppType): string | null {
   return STATIC_OUTPUT_DIRS[type] ?? null;
 }
 
@@ -100,7 +100,7 @@ const GENERIC_START_SCRIPT_CANDIDATES = [
 ];
 
 export function resolveCommands(
-  type: AppType,
+  type: JSAppType,
   pkg: PackageJson,
   startScriptOverride?: string,
 ): { buildCmd: string[] | null; startCmd: string[] } {

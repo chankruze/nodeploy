@@ -1,7 +1,7 @@
 {
   "name": "nodeploy",
-  "version": "0.1.0",
-  "description": "A lightweight, self-hosted CLI for deploying a Node.js app to a bare-metal server over SSH, behind PM2",
+  "version": "0.2.0",
+  "description": "A lightweight, self-hosted CLI for deploying a Node.js or Python app to a bare-metal server over SSH, behind PM2",
   "type": "module",
   "bin": {
     "nodeploy": "./dist/cli.js"

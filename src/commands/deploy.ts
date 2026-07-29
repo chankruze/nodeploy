@@ -53,10 +53,14 @@ export function registerDeployCommand(program: Command): void {
 
       const app = await resolveRemoteApp(target, config);
 
-      info(`  Installing dependencies (${app.installCmd.join(" ")})...`);
+      const installLabel =
+        app.runtime === "python" ? "Setting up venv" : "Installing dependencies";
+      info(`  ${installLabel} (${app.installCmd.join(" ")})...`);
       await sshExec(
         target,
-        withNvm(`cd "${app.dir}" && ${app.installCmd.join(" ")}`),
+        app.runtime === "python"
+          ? `cd "${app.dir}" && ${app.installCmd.join(" ")}`
+          : withNvm(`cd "${app.dir}" && ${app.installCmd.join(" ")}`),
         { stdio: "inherit" },
       );
 

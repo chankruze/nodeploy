@@ -1,9 +1,14 @@
 import { detectAppType, resolveCommands, resolveStaticDir } from "./detector.js";
 import { detectRemotePackageManager, resolveInstallCmd } from "./packageManager.js";
+import {
+  detectPythonAppType,
+  fetchPythonManifest,
+  resolvePythonInstallCmd,
+} from "./pythonDetector.js";
 import { sshExec } from "./ssh.js";
 import type { DeployConfig, PackageJson, RemoteApp, SSHTarget } from "../types.js";
 
-export async function resolveRemoteApp(
+async function resolveNodeRemoteApp(
   target: SSHTarget,
   config: DeployConfig,
 ): Promise<RemoteApp> {
@@ -24,6 +29,7 @@ export async function resolveRemoteApp(
     name: config.service,
     dir: config.deployPath,
     type,
+    runtime: "node",
     packageManager,
     installCmd: resolveInstallCmd(packageManager),
     buildCmd,
@@ -31,4 +37,41 @@ export async function resolveRemoteApp(
     startArgs: config.startArgs ?? [],
     staticDir: resolveStaticDir(type),
   };
+}
+
+async function resolvePythonRemoteApp(
+  target: SSHTarget,
+  config: DeployConfig,
+): Promise<RemoteApp> {
+  // Validated as required for runtime: python in deployConfig.ts.
+  const entry = config.entry as string;
+  const venvPath = `${config.deployPath}/.venv`;
+
+  const manifest = await fetchPythonManifest(target, config.deployPath);
+  const type = detectPythonAppType(manifest);
+
+  return {
+    name: config.service,
+    dir: config.deployPath,
+    type,
+    runtime: "python",
+    packageManager: "pip",
+    // Every Python app gets its own venv, even with no dependencies to install.
+    installCmd: resolvePythonInstallCmd(manifest, venvPath),
+    buildCmd: null,
+    startCmd: [entry],
+    startArgs: config.startArgs ?? [],
+    staticDir: null,
+    interpreter: `${venvPath}/bin/python3`,
+    env: config.port ? { PORT: String(config.port) } : undefined,
+  };
+}
+
+export async function resolveRemoteApp(
+  target: SSHTarget,
+  config: DeployConfig,
+): Promise<RemoteApp> {
+  return config.runtime === "python"
+    ? resolvePythonRemoteApp(target, config)
+    : resolveNodeRemoteApp(target, config);
 }

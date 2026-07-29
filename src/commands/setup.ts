@@ -10,6 +10,7 @@ import {
   ensureNode,
   ensurePM2,
   ensurePM2Startup,
+  ensurePython,
 } from "../lib/serverSetup.js";
 import { sshTest } from "../lib/ssh.js";
 
@@ -21,7 +22,7 @@ export function registerSetupCommand(program: Command): void {
   program
     .command("setup")
     .description(
-      "Provision the server for this app once: git, Node.js, PM2, nginx (if proxy is configured), and a deploy key",
+      "Provision the server for this app once: git, Node.js, PM2, Python (if runtime: python), nginx (if proxy is configured), and a deploy key",
     )
     .action(async () => {
       const config = loadDeployConfig(process.cwd(), DEPLOY_CONFIG_FILENAME);
@@ -56,6 +57,19 @@ export function registerSetupCommand(program: Command): void {
       (await ensurePM2(target))
         ? success("  PM2 installed")
         : success("  PM2 already present");
+
+      if (config.runtime === "python") {
+        info("  Checking Python (python3, venv)...");
+        try {
+          (await ensurePython(target))
+            ? success("  Python3 + venv installed")
+            : success("  Python3 + venv already present");
+        } catch (error) {
+          warn(
+            `  Could not install python3/venv — requires passwordless sudo. Install them manually, then re-run setup. (${errorMessage(error)})`,
+          );
+        }
+      }
 
       try {
         await ensurePM2Startup(target);

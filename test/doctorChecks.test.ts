@@ -11,6 +11,7 @@ const {
   checkNginx,
   checkNode,
   checkPM2,
+  checkPython,
   checkPasswordlessSudo,
   checkSSHConnection,
   runAllChecks,
@@ -31,6 +32,7 @@ function makeConfig(overrides: Partial<DeployConfig> = {}): DeployConfig {
     ssh: { user: "root", port: 22 },
     deployPath: "~/apps/api",
     nodeVersion: "22",
+    runtime: "node",
     ...overrides,
   };
 }
@@ -114,5 +116,27 @@ describe("doctorChecks", () => {
     execa.mockResolvedValue({ stdout: "ok" });
     const results = await runAllChecks(makeConfig(), target);
     expect(results.some((r) => r.name === "sudo")).toBe(true);
+  });
+
+  it("checkPython returns ok when python3 resolves on the remote", async () => {
+    execa.mockResolvedValueOnce({ stdout: "Python 3.12.0\n" });
+    const result = await checkPython(target);
+    expect(result).toEqual({
+      name: "python3",
+      ok: true,
+      message: "Python 3.12.0",
+    });
+  });
+
+  it("runAllChecks includes a python check only when runtime is python", async () => {
+    execa.mockResolvedValue({ stdout: "ok" });
+    const nodeResults = await runAllChecks(makeConfig(), target);
+    expect(nodeResults.some((r) => r.name === "python3")).toBe(false);
+
+    const pythonResults = await runAllChecks(
+      makeConfig({ runtime: "python", entry: "server.py" }),
+      target,
+    );
+    expect(pythonResults.some((r) => r.name === "python3")).toBe(true);
   });
 });

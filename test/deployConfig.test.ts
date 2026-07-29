@@ -25,6 +25,8 @@ describe("validateDeployConfig", () => {
       ssh: { user: "root", keys: undefined, port: 22 },
       deployPath: "$HOME/apps/api",
       nodeVersion: "22",
+      runtime: "node",
+      entry: undefined,
       port: undefined,
       proxy: undefined,
       startArgs: undefined,
@@ -172,6 +174,55 @@ describe("validateDeployConfig", () => {
   it("throws on non-object input", () => {
     expect(() => validateDeployConfig(null)).toThrow();
     expect(() => validateDeployConfig("nope")).toThrow();
+  });
+
+  it("defaults runtime to node when omitted", () => {
+    const config = validateDeployConfig({
+      service: "api",
+      repo: "git@github.com:user/api.git",
+      server: "1.2.3.4",
+      ssh: { user: "root" },
+    });
+
+    expect(config.runtime).toBe("node");
+  });
+
+  it("accepts runtime: python with an entry", () => {
+    const config = validateDeployConfig({
+      service: "api",
+      repo: "git@github.com:user/api.git",
+      server: "1.2.3.4",
+      ssh: { user: "root" },
+      runtime: "python",
+      entry: "server.py",
+    });
+
+    expect(config.runtime).toBe("python");
+    expect(config.entry).toBe("server.py");
+  });
+
+  it("throws when runtime is python but entry is missing", () => {
+    expect(() =>
+      validateDeployConfig({
+        service: "api",
+        repo: "git@github.com:user/api.git",
+        server: "1.2.3.4",
+        ssh: { user: "root" },
+        runtime: "python",
+      }),
+    ).toThrow(/entry/);
+  });
+
+  it("throws when runtime is not node or python", () => {
+    expect(() =>
+      validateDeployConfig({
+        service: "api",
+        repo: "git@github.com:user/api.git",
+        server: "1.2.3.4",
+        ssh: { user: "root" },
+        runtime: "ruby",
+      }),
+    ).toThrow(/runtime/);
   });
 });
 

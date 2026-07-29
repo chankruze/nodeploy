@@ -66,6 +66,21 @@ export async function ensurePM2Startup(target: SSHTarget): Promise<void> {
   );
 }
 
+/** Returns true if python3 + venv had to be installed. Requires passwordless sudo. */
+export async function ensurePython(target: SSHTarget): Promise<boolean> {
+  const hasVenv = await sshExec(target, "python3 -c 'import venv'")
+    .then(() => true)
+    .catch(() => false);
+  if (hasVenv) return false;
+
+  await sshExec(
+    target,
+    "sudo apt-get update && sudo apt-get install -y python3 python3-venv python3-pip",
+    { stdio: "inherit" },
+  );
+  return true;
+}
+
 /** Returns true if nginx had to be installed. Requires passwordless sudo. */
 export async function ensureNginx(target: SSHTarget): Promise<boolean> {
   if (await commandExists(target, "nginx")) return false;

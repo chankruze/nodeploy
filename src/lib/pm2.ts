@@ -68,14 +68,22 @@ export class SSHPM2Adapter implements PM2Adapter {
       await this.delete(app.name);
     }
 
-    const scriptName = app.startCmd[app.startCmd.length - 1];
+    const envPrefix = app.env
+      ? Object.entries(app.env)
+          .map(([key, value]) => `export ${key}="${value}"; `)
+          .join("")
+      : "";
     const extraArgs =
       app.startArgs.length > 0 ? ` -- ${app.startArgs.join(" ")}` : "";
+
+    const startCommand =
+      app.runtime === "python"
+        ? `pm2 start "${app.startCmd[0]}" --name "${app.name}" --interpreter "${app.interpreter}"${extraArgs}`
+        : `pm2 start npm --name "${app.name}" -- run ${app.startCmd[app.startCmd.length - 1]}${extraArgs}`;
+
     await sshExec(
       this.target,
-      withNvm(
-        `cd "${app.dir}" && pm2 start npm --name "${app.name}" -- run ${scriptName}${extraArgs}`,
-      ),
+      withNvm(`cd "${app.dir}" && ${envPrefix}${startCommand}`),
     );
     await this.save();
   }

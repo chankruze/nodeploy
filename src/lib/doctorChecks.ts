@@ -52,6 +52,12 @@ export function checkPM2(target: SSHTarget): Promise<DoctorCheckResult> {
   });
 }
 
+export function checkPython(target: SSHTarget): Promise<DoctorCheckResult> {
+  return checkRemoteBinary(target, "python3", "--version", {
+    hint: "python3 not found on remote PATH — required for runtime: python",
+  });
+}
+
 export function checkNginx(target: SSHTarget): Promise<DoctorCheckResult> {
   return checkRemoteBinary(target, "nginx", "-v", {
     optional: true,
@@ -156,6 +162,10 @@ export async function runAllChecks(
     checkDeployPathWritable(target, config.deployPath),
     checkPasswordlessSudo(target),
   ];
+
+  if (config.runtime === "python") {
+    checks.push(checkPython(target));
+  }
 
   return [connection, ...(await Promise.all(checks))];
 }

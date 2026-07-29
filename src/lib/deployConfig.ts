@@ -1,8 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse } from "yaml";
-import { DEFAULT_BRANCH, DEFAULT_NODE_VERSION, DEFAULT_SSH_PORT } from "../constants.js";
-import type { DeployConfig, SSHTarget } from "../types.js";
+import {
+  DEFAULT_BRANCH,
+  DEFAULT_NODE_VERSION,
+  DEFAULT_RUNTIME,
+  DEFAULT_SSH_PORT,
+} from "../constants.js";
+import type { DeployConfig, Runtime, SSHTarget } from "../types.js";
 
 // `~` only expands via shell tilde-expansion, which doesn't happen when a path
 // is interpolated inside a double-quoted string (as every remote command here
@@ -97,6 +102,26 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
     throw new Error("nodeploy.yml: \"node_version\" must be a string");
   }
 
+  let runtime: Runtime = DEFAULT_RUNTIME;
+  if (candidate.runtime !== undefined) {
+    if (candidate.runtime !== "node" && candidate.runtime !== "python") {
+      throw new Error(
+        "nodeploy.yml: \"runtime\" must be \"node\" or \"python\"",
+      );
+    }
+    runtime = candidate.runtime;
+  }
+
+  if (candidate.entry !== undefined && typeof candidate.entry !== "string") {
+    throw new Error("nodeploy.yml: \"entry\" must be a string");
+  }
+
+  if (runtime === "python" && typeof candidate.entry !== "string") {
+    throw new Error(
+      "nodeploy.yml: \"entry\" is required when \"runtime\" is \"python\" (e.g. entry: server.py)",
+    );
+  }
+
   let proxy: DeployConfig["proxy"];
   if (candidate.proxy !== undefined) {
     if (typeof candidate.proxy !== "object" || candidate.proxy === null) {
@@ -125,6 +150,8 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
     ),
     nodeVersion:
       (candidate.node_version as string | undefined) ?? DEFAULT_NODE_VERSION,
+    runtime,
+    entry: candidate.entry as string | undefined,
     port: candidate.port as number | undefined,
     proxy,
     startArgs: candidate.start_args as string[] | undefined,
