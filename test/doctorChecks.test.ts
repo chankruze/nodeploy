@@ -9,6 +9,7 @@ const {
   checkDeployPathWritable,
   checkMemory,
   checkCertificate,
+  checkEdgeProxyProtocolPort,
   checkEdgeRouting,
   checkEdgeUpstream,
   checkLocalEdgeRoute,
@@ -150,10 +151,22 @@ describe("doctorChecks", () => {
   const edgeTarget: SSHTarget = { host: "192.168.0.8", user: "root", port: 22 };
 
   it("checkEdgeRouting is ok when router, site, and route are all present", async () => {
-    execa.mockResolvedValueOnce({ stdout: "router\nsite\nroute\n" });
+    execa.mockResolvedValueOnce({
+      stdout: "router\nsite\nroute\nbob.example.com 192.168.0.12:8444;\n",
+    });
     const result = await checkEdgeRouting(edgeTarget, "bob.example.com", "192.168.0.12", true);
     expect(result.ok).toBe(true);
-    expect(result.message).toContain("bob.example.com → 192.168.0.12 (http + https)");
+    expect(result.message).toContain("bob.example.com → 192.168.0.12 (http + https, real client IPs");
+  });
+
+  it("checkEdgeRouting flags an HTTPS route from before real-client-IP support", async () => {
+    execa.mockResolvedValueOnce({
+      stdout: "router\nsite\nroute\nbob.example.com 192.168.0.12:443;\n",
+    });
+    const result = await checkEdgeRouting(edgeTarget, "bob.example.com", "192.168.0.12", true);
+    expect(result.ok).toBe(false);
+    expect(result.optional).toBe(true);
+    expect(result.message).toContain("without PROXY protocol");
   });
 
   it("checkEdgeRouting fails hard when HTTPS is on but the edge has no SNI router", async () => {
@@ -194,10 +207,30 @@ describe("doctorChecks", () => {
 
   it("checkLocalEdgeRoute is ok when the edge routes the host to the local TLS port", async () => {
     execa.mockResolvedValueOnce({
-      stdout: "router\n# Managed by nodeploy.\npayroll.example.com 127.0.0.1:8443;\n",
+      stdout: "router\n# Managed by nodeploy.\npayroll.example.com 127.0.0.1:8444;\n",
     });
     const result = await checkLocalEdgeRoute(target, "payroll.example.com");
     expect(result?.ok).toBe(true);
+  });
+
+  it("checkLocalEdgeRoute flags a local route from before real-client-IP support", async () => {
+    execa.mockResolvedValueOnce({ stdout: "router\npayroll.example.com 127.0.0.1:8443;\n" });
+    const result = await checkLocalEdgeRoute(target, "payroll.example.com");
+    expect(result?.ok).toBe(false);
+    expect(result?.optional).toBe(true);
+  });
+
+  it("checkEdgeProxyProtocolPort checks the edge can open a TCP connection to upstream:8444", async () => {
+    execa.mockResolvedValueOnce({ stdout: "" });
+    const ok = await checkEdgeProxyProtocolPort(edgeTarget, "192.168.0.12");
+    expect(ok.ok).toBe(true);
+    const args = execa.mock.calls[0][1] as string[];
+    expect(args[args.length - 1]).toBe("timeout 5 bash -c '</dev/tcp/192.168.0.12/8444'");
+
+    execa.mockRejectedValueOnce(new Error("connection refused"));
+    const failed = await checkEdgeProxyProtocolPort(edgeTarget, "192.168.0.12");
+    expect(failed.ok).toBe(false);
+    expect(failed.optional).toBe(true);
   });
 
   it("checkLocalEdgeRoute is optional when the edge has no route for the host yet", async () => {

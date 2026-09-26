@@ -17,7 +17,7 @@ const {
   localizeNodeploySite,
   planLocalTLSMigration,
 } = await import("../src/lib/edge.js");
-const { buildServerBlock } = await import("../src/lib/nginx.js");
+const { buildServerBlock, buildStaticServerBlock } = await import("../src/lib/nginx.js");
 
 const edge: SSHTarget = { host: "192.168.0.8", user: "root", port: 22 };
 
@@ -28,6 +28,13 @@ function remoteCommand(call: number): string {
 
 function scriptInput(call: number): string {
   return execa.mock.calls[call][2].input as string;
+}
+
+/** Edge set up, with an SNI router already matching the current version. */
+function mockEdgeWithCurrentRouter(): void {
+  execa.mockResolvedValueOnce({ stdout: "" }); // test -f router
+  execa.mockResolvedValueOnce({ stdout: buildEdgeStreamConfig() }); // cat router
+  execa.mockResolvedValue({ stdout: "" });
 }
 
 describe("edge config builders", () => {
@@ -55,6 +62,16 @@ describe("edge config builders", () => {
     expect(conf).toContain("default 127.0.0.1:8443;");
     expect(conf).toContain("listen 443;");
     expect(conf).toContain("ssl_preread on;");
+  });
+
+  it("sends PROXY protocol straight to :8444 upstreams, and via a stripping hop to everything else", () => {
+    const conf = buildEdgeStreamConfig();
+
+    expect(conf).toContain("map $nodeploy_upstream $nodeploy_first_hop {");
+    expect(conf).toContain("~:8444$ $nodeploy_upstream;");
+    expect(conf).toContain("default 127.0.0.1:9443;");
+    expect(conf).toMatch(/listen 443;[\s\S]*proxy_protocol on;\n\s*proxy_pass \$nodeploy_first_hop;/);
+    expect(conf).toMatch(/listen 127\.0\.0\.1:9443 proxy_protocol;\n\s*ssl_preread on;\n\s*proxy_pass \$nodeploy_upstream;/);
   });
 });
 
@@ -95,13 +112,27 @@ server {
 
 describe("localizeNodeploySite", () => {
   it("moves a nodeploy HTTPS site from 443 to the local TLS port, keeping everything else", () => {
-    const site = buildServerBlock("payroll.example.com", 8080, true);
+    const site = buildServerBlock("payroll.example.com", 8080, { ssl: true });
     const result = localizeNodeploySite(site);
 
     expect(result?.host).toBe("payroll.example.com");
     expect(result?.content).toBe(
-      site.replace("listen 443 ssl http2;", "listen 127.0.0.1:8443 ssl http2;"),
+      site.replace(
+        "listen 443 ssl http2;",
+        "listen 127.0.0.1:8444 ssl http2 proxy_protocol;\n    set_real_ip_from 127.0.0.1;\n    real_ip_header proxy_protocol;",
+      ),
     );
+  });
+
+  it("produces exactly what deploy writes for an HTTPS app on an edge", () => {
+    for (const build of [
+      (o: object) => buildServerBlock("payroll.example.com", 8080, o),
+      (o: object) => buildStaticServerBlock("payroll.example.com", "/srv/dist", o),
+    ]) {
+      expect(localizeNodeploySite(build({ ssl: true }))?.content).toBe(
+        build({ ssl: true, onEdge: true }),
+      );
+    }
   });
 
   it("leaves alone anything that isn't the exact shape nodeploy writes", () => {
@@ -112,7 +143,7 @@ describe("localizeNodeploySite", () => {
       ),
     ).toBeNull();
     // nodeploy's shape plus an extra IPv6 443 listener someone added.
-    const tweaked = buildServerBlock("payroll.example.com", 8080, true).replace(
+    const tweaked = buildServerBlock("payroll.example.com", 8080, { ssl: true }).replace(
       "listen 443 ssl http2;",
       "listen 443 ssl http2;\n    listen [::]:443 ssl http2;",
     );
@@ -124,7 +155,7 @@ describe("localizeNodeploySite", () => {
 
 describe("planLocalTLSMigration", () => {
   it("moves nodeploy HTTPS sites to the local TLS port with a route each, and reports anything else as foreign", () => {
-    const payroll = buildServerBlock("payroll.example.com", 8080, true);
+    const payroll = buildServerBlock("payroll.example.com", 8080, { ssl: true });
     const dump = [
       "# configuration file /etc/nginx/sites-enabled/payroll.conf:",
       payroll,
@@ -141,11 +172,11 @@ describe("planLocalTLSMigration", () => {
     expect(plan.ops).toHaveLength(2);
     expect(plan.ops[0]).toMatchObject({ path: "/etc/nginx/sites-enabled/payroll.conf" });
     expect((plan.ops[0] as { content: string }).content).toContain(
-      "listen 127.0.0.1:8443 ssl http2;",
+      "listen 127.0.0.1:8444 ssl http2 proxy_protocol;",
     );
     expect(plan.ops[1]).toEqual({
       path: "/etc/nginx/stream.d/nodeploy-routes/payroll.example.com.conf",
-      content: "# Managed by nodeploy.\npayroll.example.com 127.0.0.1:8443;\n",
+      content: "# Managed by nodeploy.\npayroll.example.com 127.0.0.1:8444;\n",
     });
   });
 });
@@ -181,15 +212,16 @@ describe("deployEdgeRoute", () => {
   });
 
   it("with ssl, writes the HTTP forward and the SNI route in one transactional apply", async () => {
-    execa.mockResolvedValue({ stdout: "" });
+    mockEdgeWithCurrentRouter();
 
     await deployEdgeRoute(edge, "bob.geekofia.cloud", "192.168.0.12", true);
 
-    expect(execa).toHaveBeenCalledTimes(2);
+    expect(execa).toHaveBeenCalledTimes(3);
     expect(remoteCommand(0)).toBe(`test -f "${EDGE_STREAM_CONF}"`);
-    expect(remoteCommand(1)).toBe("bash -s");
+    expect(remoteCommand(1)).toBe(`cat "${EDGE_STREAM_CONF}"`);
+    expect(remoteCommand(2)).toBe("bash -s");
 
-    const script = scriptInput(1);
+    const script = scriptInput(2);
     expect(script).toContain('sudo tee "/etc/nginx/sites-available/edge.bob.geekofia.cloud.conf"');
     expect(script).toContain(
       'sudo ln -sf "/etc/nginx/sites-available/edge.bob.geekofia.cloud.conf" "/etc/nginx/sites-enabled/edge.bob.geekofia.cloud.conf"',
@@ -242,7 +274,7 @@ describe("bootstrapEdge", () => {
 
   it("moves nodeploy HTTPS apps already on the box to the local TLS port in the same apply", async () => {
     execa.mockResolvedValueOnce({
-      stdout: `# configuration file /etc/nginx/sites-enabled/payroll.conf:\n${buildServerBlock("payroll.example.com", 8080, true)}`,
+      stdout: `# configuration file /etc/nginx/sites-enabled/payroll.conf:\n${buildServerBlock("payroll.example.com", 8080, { ssl: true })}`,
     });
     execa.mockResolvedValue({ stdout: "" });
 
@@ -252,8 +284,9 @@ describe("bootstrapEdge", () => {
     const script = scriptInput(2);
     expect(script).toContain(`sudo tee "${EDGE_STREAM_CONF}"`);
     expect(script).toContain('sudo tee "/etc/nginx/sites-enabled/payroll.conf"');
-    expect(script).toContain("listen 127.0.0.1:8443 ssl http2;");
-    expect(script).toContain("payroll.example.com 127.0.0.1:8443;");
+    expect(script).toContain("listen 127.0.0.1:8444 ssl http2 proxy_protocol;");
+    expect(script).toContain("set_real_ip_from 127.0.0.1;");
+    expect(script).toContain("payroll.example.com 127.0.0.1:8444;");
   });
 
   it("refuses when something else already listens on 443, naming the file", async () => {
@@ -296,11 +329,11 @@ describe("route hosts and wildcards", () => {
 
   it("writes a wildcard server_name and SNI key as-is into the config", async () => {
     execa.mockReset();
-    execa.mockResolvedValue({ stdout: "" });
+    mockEdgeWithCurrentRouter();
 
     await deployEdgeRoute(edge, "*.brothersequipment.in", "192.168.0.16", true);
 
-    const script = scriptInput(1);
+    const script = scriptInput(2);
     expect(script).toContain("server_name *.brothersequipment.in;");
     expect(script).toContain("*.brothersequipment.in 192.168.0.16:443;");
   });
@@ -359,12 +392,12 @@ describe("ensureEdgeBootstrapped", () => {
     execa.mockReset();
   });
 
-  it("does nothing when the edge already has its SNI router", async () => {
+  it("only checks the router is current when the edge is already set up", async () => {
     const { ensureEdgeBootstrapped } = await import("../src/lib/edge.js");
-    execa.mockResolvedValueOnce({ stdout: "" });
+    execa.mockResolvedValue({ stdout: buildEdgeStreamConfig() });
 
     expect(await ensureEdgeBootstrapped(edge)).toEqual([]);
-    expect(execa).toHaveBeenCalledTimes(1);
+    expect(execa).toHaveBeenCalledTimes(3); // test -f, test -f, cat — no apply
   });
 
   it("installs the stream module and bootstraps when it doesn't", async () => {
@@ -378,5 +411,74 @@ describe("ensureEdgeBootstrapped", () => {
 
     expect(remoteCommand(3)).toBe('sudo mkdir -p "/etc/nginx/stream.d/nodeploy-routes"');
     expect(scriptInput(4)).toContain("ssl_preread on;");
+  });
+});
+
+describe("PROXY protocol edge steps", () => {
+  beforeEach(() => {
+    execa.mockReset();
+  });
+
+  it("prepareEdgeForHttps rewrites an SNI router from before real-client-IP support", async () => {
+    const { prepareEdgeForHttps } = await import("../src/lib/edge.js");
+    execa.mockResolvedValueOnce({ stdout: "" }); // test -f
+    execa.mockResolvedValueOnce({ stdout: "# old router without proxy_protocol" }); // cat
+    execa.mockResolvedValue({ stdout: "" });
+
+    await prepareEdgeForHttps(edge);
+
+    expect(execa).toHaveBeenCalledTimes(3);
+    const script = scriptInput(2);
+    expect(script).toContain(`sudo tee "${EDGE_STREAM_CONF}"`);
+    expect(script).toContain("proxy_protocol on;");
+  });
+
+  it("prepareEdgeForHttps refuses on an edge that was never set up", async () => {
+    const { prepareEdgeForHttps } = await import("../src/lib/edge.js");
+    execa.mockRejectedValueOnce(new Error("exit 1"));
+
+    await expect(prepareEdgeForHttps(edge)).rejects.toThrow(/run `nodeploy setup` first/);
+  });
+
+  it("deployEdgeHttpForward writes only the port-80 forward", async () => {
+    const { deployEdgeHttpForward } = await import("../src/lib/edge.js");
+    execa.mockResolvedValue({ stdout: "" });
+
+    await deployEdgeHttpForward(edge, "bob.geekofia.cloud", "192.168.0.12");
+
+    const script = scriptInput(0);
+    expect(script).toContain("proxy_pass http://192.168.0.12;");
+    expect(script).not.toContain("nodeploy-routes");
+  });
+
+  it("setEdgeSniRoute writes or removes only the SNI route", async () => {
+    const { setEdgeSniRoute } = await import("../src/lib/edge.js");
+    execa.mockResolvedValue({ stdout: "" });
+
+    await setEdgeSniRoute(edge, "bob.geekofia.cloud", "192.168.0.12:8444");
+    expect(scriptInput(0)).toContain("bob.geekofia.cloud 192.168.0.12:8444;");
+    expect(scriptInput(0)).not.toContain("sites-available");
+
+    await setEdgeSniRoute(edge, "bob.geekofia.cloud", null);
+    expect(scriptInput(1)).toContain(
+      'sudo rm -f "/etc/nginx/stream.d/nodeploy-routes/bob.geekofia.cloud.conf"',
+    );
+  });
+
+  it("edgeSourceAddress asks the edge's routing table which address it reaches the upstream from", async () => {
+    const { edgeSourceAddress } = await import("../src/lib/edge.js");
+    execa.mockResolvedValueOnce({ stdout: "192.168.0.8\n" });
+
+    expect(await edgeSourceAddress(edge, "192.168.0.12")).toBe("192.168.0.8");
+    const cmd = remoteCommand(0);
+    expect(cmd).toContain('getent ahostsv4 "192.168.0.12"');
+    expect(cmd).toContain('ip -4 route get "$ip"');
+  });
+
+  it("edgeSourceAddress refuses to guess when the edge can't say", async () => {
+    const { edgeSourceAddress } = await import("../src/lib/edge.js");
+    execa.mockResolvedValueOnce({ stdout: "" });
+
+    await expect(edgeSourceAddress(edge, "nowhere.lan")).rejects.toThrow(/couldn't work out/);
   });
 });

@@ -6,7 +6,13 @@ import {
   toEdgeSSHTarget,
   toSSHTarget,
 } from "../lib/deployConfig.js";
-import { deployEdgeRoute } from "../lib/edge.js";
+import {
+  EDGE_PP_PORT,
+  deployEdgeHttpForward,
+  edgeSourceAddress,
+  prepareEdgeForHttps,
+  setEdgeSniRoute,
+} from "../lib/edge.js";
 import { fail, info, success } from "../lib/logger.js";
 import { deployProxyConfig, deployStaticProxyConfig } from "../lib/nginx.js";
 import { createPM2Adapter } from "../lib/pm2.js";
@@ -40,21 +46,34 @@ function printAccessInfo(config: DeployConfig): void {
   }
 }
 
-/** Routes proxy.host from the edge to this app's server. Runs before the app's
- * own nginx step, since first-time cert issuance needs ACME challenges to
- * already flow edge → upstream. */
-async function configureEdge(config: DeployConfig): Promise<void> {
+/** First half of routing proxy.host through the edge, before the app's own
+ * nginx step: the port-80 forward (first-time cert issuance needs ACME
+ * challenges to already flow edge → upstream), plus an up-to-date SNI router
+ * for HTTPS. Returns the edge's address as this server sees it, which the
+ * app's nginx trusts real client IPs from. */
+async function prepareEdge(config: DeployConfig): Promise<string | undefined> {
   const edge = config.proxy?.edge;
-  if (!config.proxy || !edge) return;
+  if (!config.proxy || !edge) return undefined;
 
+  const edgeTarget = toEdgeSSHTarget(edge);
   info(
     `  Routing ${config.proxy.host} from edge ${edge.server} to ${edge.upstream}...`,
   );
-  await deployEdgeRoute(
+  if (config.proxy.ssl) await prepareEdgeForHttps(edgeTarget);
+  await deployEdgeHttpForward(edgeTarget, config.proxy.host, edge.upstream);
+  return edgeSourceAddress(edgeTarget, edge.upstream);
+}
+
+/** Second half, once the app's nginx has its PROXY-protocol listener: points
+ * the edge's HTTPS route at it (or removes the route if SSL is off). */
+async function finishEdge(config: DeployConfig): Promise<void> {
+  const edge = config.proxy?.edge;
+  if (!config.proxy || !edge) return;
+
+  await setEdgeSniRoute(
     toEdgeSSHTarget(edge),
     config.proxy.host,
-    edge.upstream,
-    Boolean(config.proxy.ssl),
+    config.proxy.ssl ? `${edge.upstream}:${EDGE_PP_PORT}` : null,
   );
 }
 
@@ -119,7 +138,7 @@ export function registerDeployCommand(program: Command): void {
           target,
           `${app.dir}/${app.staticDir}`,
         );
-        await configureEdge(config);
+        const behindEdge = await prepareEdge(config);
         info(`  Configuring nginx to serve ${root} for ${config.proxy.host}...`);
         await deployStaticProxyConfig(
           target,
@@ -127,7 +146,9 @@ export function registerDeployCommand(program: Command): void {
           config.proxy.host,
           root,
           config.proxy.ssl,
+          behindEdge,
         );
+        await finishEdge(config);
 
         success(`${config.service} deployed`);
         printAccessInfo(config);
@@ -144,7 +165,7 @@ export function registerDeployCommand(program: Command): void {
           return;
         }
 
-        await configureEdge(config);
+        const behindEdge = await prepareEdge(config);
         info(`  Configuring nginx proxy for ${config.proxy.host}...`);
         await deployProxyConfig(
           target,
@@ -152,7 +173,9 @@ export function registerDeployCommand(program: Command): void {
           config.proxy.host,
           config.port,
           config.proxy.ssl,
+          behindEdge,
         );
+        await finishEdge(config);
       }
 
       success(`${config.service} deployed`);

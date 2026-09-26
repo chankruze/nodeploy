@@ -26,7 +26,7 @@ describe("buildServerBlock", () => {
   });
 
   it("with ssl, redirects port 80 to https and proxies from a 443 block using the host's cert", () => {
-    const block = buildServerBlock("api.example.com", 3000, true);
+    const block = buildServerBlock("api.example.com", 3000, { ssl: true });
     const [httpBlock, httpsBlock] = block.split(/\n(?=server \{)/);
 
     expect(httpBlock).toContain("listen 80;");
@@ -56,7 +56,7 @@ describe("buildStaticServerBlock", () => {
   });
 
   it("with ssl, serves the static root from the 443 block only", () => {
-    const block = buildStaticServerBlock("app.example.com", "/root/apps/app/dist", true);
+    const block = buildStaticServerBlock("app.example.com", "/root/apps/app/dist", { ssl: true });
     const [httpBlock, httpsBlock] = block.split(/\n(?=server \{)/);
 
     expect(httpBlock).not.toContain("root /root/apps/app/dist;");
@@ -79,6 +79,57 @@ function lastArg(call: number): string {
 function input(call: number): string {
   return execa.mock.calls[call][2].input as string;
 }
+
+describe("behind an edge (real client IPs)", () => {
+  it("keeps 443 for direct clients, adds a PROXY-protocol listener for the edge, and trusts only the edge", () => {
+    const block = buildServerBlock("bob.geekofia.cloud", 3000, {
+      ssl: true,
+      behindEdge: "192.168.0.8",
+    });
+    const [httpBlock, httpsBlock] = block.split(/\n(?=server \{)/);
+
+    expect(httpsBlock).toContain("listen 443 ssl http2;");
+    expect(httpsBlock).toContain("listen 8444 ssl http2 proxy_protocol;");
+    expect(httpsBlock).toContain("set_real_ip_from 192.168.0.8;");
+    expect(httpsBlock).toContain("real_ip_header proxy_protocol;");
+
+    // Port 80 comes through the edge's HTTP forward, which sets X-Forwarded-For.
+    expect(httpBlock).toContain("set_real_ip_from 192.168.0.8;");
+    expect(httpBlock).toContain("real_ip_header X-Forwarded-For;");
+  });
+
+  it("without ssl, trusts the edge's X-Forwarded-For on port 80 only", () => {
+    const block = buildServerBlock("bob.geekofia.cloud", 3000, { behindEdge: "192.168.0.8" });
+
+    expect(block).toContain("real_ip_header X-Forwarded-For;");
+    expect(block).not.toContain("proxy_protocol");
+  });
+
+  it("isn't applied to apps not behind an edge", () => {
+    const block = buildServerBlock("api.example.com", 3000, { ssl: true });
+
+    expect(block).not.toContain("set_real_ip_from");
+    expect(block).not.toContain("8444");
+  });
+
+  it("deployProxyConfig passes the edge address through to the written config", async () => {
+    execa.mockReset();
+    notAnEdge();
+    execa.mockResolvedValue({}); // cert exists, write
+
+    await deployProxyConfig(
+      { host: "192.168.0.12", user: "root", port: 22 },
+      "bob",
+      "bob.geekofia.cloud",
+      3000,
+      {},
+      "192.168.0.8",
+    );
+
+    expect(input(2)).toContain("listen 8444 ssl http2 proxy_protocol;");
+    expect(input(2)).toContain("set_real_ip_from 192.168.0.8;");
+  });
+});
 
 describe("deployProxyConfig", () => {
   const target: SSHTarget = { host: "1.2.3.4", user: "root", port: 22 };
@@ -196,12 +247,14 @@ describe("deployProxyConfig", () => {
       expect(script).toContain(
         'sudo ln -sf "/etc/nginx/sites-available/payroll.conf" "/etc/nginx/sites-enabled/payroll.conf"',
       );
-      expect(script).toContain("listen 127.0.0.1:8443 ssl http2;");
+      expect(script).toContain("listen 127.0.0.1:8444 ssl http2 proxy_protocol;");
+      expect(script).toContain("set_real_ip_from 127.0.0.1;");
+      expect(script).toContain("real_ip_header proxy_protocol;");
       expect(script).not.toContain("listen 443 ssl http2;");
       expect(script).toContain(
         'sudo tee "/etc/nginx/stream.d/nodeploy-routes/payroll.example.com.conf"',
       );
-      expect(script).toContain("payroll.example.com 127.0.0.1:8443;");
+      expect(script).toContain("payroll.example.com 127.0.0.1:8444;");
       expect(script).toContain("if ! sudo nginx -t; then");
     });
 
@@ -213,9 +266,9 @@ describe("deployProxyConfig", () => {
       await deployProxyConfig(target, "payroll", "payroll.example.com", 8080, {});
 
       expect(execa).toHaveBeenCalledTimes(5);
-      expect(input(2)).not.toContain("8443");
+      expect(input(2)).not.toContain("8444");
       expect(lastArg(3)).toContain("sudo certbot certonly --webroot");
-      expect(input(4)).toContain("listen 127.0.0.1:8443 ssl http2;");
+      expect(input(4)).toContain("listen 127.0.0.1:8444 ssl http2 proxy_protocol;");
     });
 
     it("without ssl, serves plain HTTP and removes any route left from when ssl was on", async () => {
@@ -227,7 +280,7 @@ describe("deployProxyConfig", () => {
       expect(execa).toHaveBeenCalledTimes(2);
       const script = input(1);
       expect(script).toContain("listen 80;");
-      expect(script).not.toContain("8443");
+      expect(script).not.toContain("8444");
       expect(script).toContain(
         'sudo rm -f "/etc/nginx/stream.d/nodeploy-routes/payroll.example.com.conf"',
       );
@@ -310,7 +363,7 @@ describe("deployStaticProxyConfig", () => {
     );
 
     expect(execa).toHaveBeenCalledTimes(4);
-    expect(input(3)).toContain("listen 127.0.0.1:8443 ssl http2;");
-    expect(input(3)).toContain("app.example.com 127.0.0.1:8443;");
+    expect(input(3)).toContain("listen 127.0.0.1:8444 ssl http2 proxy_protocol;");
+    expect(input(3)).toContain("app.example.com 127.0.0.1:8444;");
   });
 });

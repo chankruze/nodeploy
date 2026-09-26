@@ -1,6 +1,7 @@
 import { toEdgeSSHTarget } from "./deployConfig.js";
 import {
-  EDGE_LOCAL_TLS,
+  EDGE_LOCAL_PP,
+  EDGE_PP_PORT,
   EDGE_STREAM_CONF,
   edgeRoutePath,
   edgeSiteLink,
@@ -145,16 +146,18 @@ export async function checkEdgeRouting(
 ): Promise<DoctorCheckResult> {
   const name = "Edge routing";
   let present: string[];
+  let routeLine = "";
   try {
     const { stdout } = await sshExec(
       edgeTarget,
       [
         `if [ -f "${EDGE_STREAM_CONF}" ]; then echo router; fi`,
         `if [ -e "${edgeSiteLink(host)}" ]; then echo site; fi`,
-        `if [ -f "${edgeRoutePath(host)}" ]; then echo route; fi`,
+        `if [ -f "${edgeRoutePath(host)}" ]; then echo route; grep -v '^#' "${edgeRoutePath(host)}"; fi`,
       ].join("; "),
     );
     present = stdout.split("\n").map((line) => line.trim());
+    routeLine = present.find((line) => line.startsWith(`${host} `)) ?? "";
   } catch {
     return {
       name,
@@ -180,10 +183,20 @@ export async function checkEdgeRouting(
     };
   }
 
+  // Routes deployed before real-client-IP support go to plain 443.
+  if (ssl && !routeLine.endsWith(`:${EDGE_PP_PORT};`)) {
+    return {
+      name,
+      ok: false,
+      message: `edge ${edgeTarget.host} routes ${host}'s HTTPS without PROXY protocol, so the app sees the edge's IP instead of the client's — \`nodeploy deploy\` again to fix`,
+      optional: true,
+    };
+  }
+
   return {
     name,
     ok: true,
-    message: `${edgeTarget.host} routes ${host} → ${upstream} (${ssl ? "http + https" : "http"})`,
+    message: `${edgeTarget.host} routes ${host} → ${upstream} (${ssl ? `http + https, real client IPs via PROXY protocol on :${EDGE_PP_PORT}` : "http"})`,
   };
 }
 
@@ -207,11 +220,11 @@ export async function checkLocalEdgeRoute(
 
   if (!stdout.includes("router")) return null;
 
-  if (!stdout.includes(`${host} ${EDGE_LOCAL_TLS};`)) {
+  if (!stdout.includes(`${host} ${EDGE_LOCAL_PP};`)) {
     return {
       name,
       ok: false,
-      message: `${target.host} is an edge, but its SNI router doesn't send ${host} to ${EDGE_LOCAL_TLS} yet — \`nodeploy deploy\` writes the route`,
+      message: `${target.host} is an edge, but its SNI router doesn't send ${host} to ${EDGE_LOCAL_PP} (with real client IPs) yet — \`nodeploy deploy\` writes the route`,
       optional: true,
     };
   }
@@ -219,8 +232,36 @@ export async function checkLocalEdgeRoute(
   return {
     name,
     ok: true,
-    message: `${target.host} is an edge; HTTPS for ${host} is routed to ${EDGE_LOCAL_TLS} on the same box`,
+    message: `${target.host} is an edge; HTTPS for ${host} is routed to ${EDGE_LOCAL_PP} on the same box, with real client IPs`,
   };
+}
+
+/** HTTPS through the edge arrives on the upstream's EDGE_PP_PORT listener,
+ * which a firewall on the upstream could block even with 80/443 open.
+ * Optional, since nothing listens there until the first deploy. */
+export async function checkEdgeProxyProtocolPort(
+  edgeTarget: SSHTarget,
+  upstream: string,
+): Promise<DoctorCheckResult> {
+  const name = `Edge → upstream :${EDGE_PP_PORT}`;
+  try {
+    await sshExec(
+      edgeTarget,
+      `timeout 5 bash -c '</dev/tcp/${upstream}/${EDGE_PP_PORT}'`,
+    );
+    return {
+      name,
+      ok: true,
+      message: `${upstream}:${EDGE_PP_PORT} reachable from edge (HTTPS with real client IPs)`,
+    };
+  } catch {
+    return {
+      name,
+      ok: false,
+      message: `edge ${edgeTarget.host} can't reach ${upstream}:${EDGE_PP_PORT} — expected before the first deploy; otherwise allow that port from the edge in ${upstream}'s firewall`,
+      optional: true,
+    };
+  }
 }
 
 /** The edge forwards to the upstream's nginx on 80/443, so the upstream has
@@ -367,6 +408,9 @@ export async function runAllChecks(
       checkEdgeRouting(edgeTarget, host, edge.upstream, Boolean(ssl)),
       checkEdgeUpstream(edgeTarget, host, edge.upstream),
     );
+    if (ssl) {
+      checks.push(checkEdgeProxyProtocolPort(edgeTarget, edge.upstream));
+    }
   }
 
   const results = await Promise.all(checks);

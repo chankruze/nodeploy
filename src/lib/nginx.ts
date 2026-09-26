@@ -1,11 +1,13 @@
 import {
-  EDGE_LOCAL_TLS,
-  LOCAL_TLS_LISTEN,
+  EDGE_LOCAL_PP,
+  EDGE_PP_LISTEN,
+  LOCAL_PP_LISTEN,
   PUBLIC_TLS_LISTEN,
   applyNginxChanges,
   buildEdgeRoute,
   edgeRoutePath,
   isEdgeBootstrapped,
+  realIPDirectives,
 } from "./edge.js";
 import { sshExec } from "./ssh.js";
 import type { SSHTarget, SSLConfig } from "../types.js";
@@ -46,21 +48,31 @@ const ACME_LOCATION = `    location /.well-known/acme-challenge/ {
         root ${ACME_WEBROOT};
     }`;
 
+export interface SiteOptions {
+  ssl?: boolean;
+  /** The app runs on an edge, whose SNI router owns 443: HTTPS listens on
+   * EDGE_LOCAL_PP instead, trusting the router's PROXY header on loopback. */
+  onEdge?: boolean;
+  /** The app sits behind this edge address: HTTPS also listens on
+   * EDGE_PP_PORT for the edge's PROXY-protocol connections (443 stays for
+   * direct LAN clients), and port 80 trusts its X-Forwarded-For — both
+   * from this exact address only. */
+  behindEdge?: string;
+}
+
 /** Wraps a site body in nginx server block(s). With `ssl`, port 80 only
- * answers ACME challenges and redirects to HTTPS, and the body moves to 443
- * — or, with `localTLS` (the app runs on an edge, whose SNI router owns
- * 443), to EDGE_LOCAL_TLS, which the router forwards this host to. */
-function buildSite(
-  host: string,
-  body: string,
-  ssl: boolean,
-  localTLS: boolean,
-): string {
-  if (!ssl) {
+ * answers ACME challenges and redirects to HTTPS, and the body moves to the
+ * HTTPS block (see SiteOptions for where that listens). */
+function buildSite(host: string, body: string, opts: SiteOptions): string {
+  const httpRealIP = opts.behindEdge
+    ? `\n${realIPDirectives(opts.behindEdge, "X-Forwarded-For")}\n`
+    : "";
+
+  if (!opts.ssl) {
     return `server {
     listen 80;
     server_name ${host};
-
+${httpRealIP}
 ${ACME_LOCATION}
 
 ${body}
@@ -68,11 +80,23 @@ ${body}
 `;
   }
 
+  let tlsListen: string;
+  if (opts.onEdge) {
+    tlsListen = `    ${LOCAL_PP_LISTEN}
+${realIPDirectives("127.0.0.1", "proxy_protocol")}`;
+  } else if (opts.behindEdge) {
+    tlsListen = `    ${PUBLIC_TLS_LISTEN}
+    ${EDGE_PP_LISTEN}
+${realIPDirectives(opts.behindEdge, "proxy_protocol")}`;
+  } else {
+    tlsListen = `    ${PUBLIC_TLS_LISTEN}`;
+  }
+
   const certDir = certificateDir(host);
   return `server {
     listen 80;
     server_name ${host};
-
+${httpRealIP}
 ${ACME_LOCATION}
 
     location / {
@@ -81,7 +105,7 @@ ${ACME_LOCATION}
 }
 
 server {
-    ${localTLS ? LOCAL_TLS_LISTEN : PUBLIC_TLS_LISTEN}
+${tlsListen}
     server_name ${host};
 
     ssl_certificate ${certDir}/fullchain.pem;
@@ -95,19 +119,17 @@ ${body}
 export function buildServerBlock(
   host: string,
   port: number,
-  ssl = false,
-  localTLS = false,
+  opts: SiteOptions = {},
 ): string {
-  return buildSite(host, proxyBody(port), ssl, localTLS);
+  return buildSite(host, proxyBody(port), opts);
 }
 
 export function buildStaticServerBlock(
   host: string,
   root: string,
-  ssl = false,
-  localTLS = false,
+  opts: SiteOptions = {},
 ): string {
-  return buildSite(host, staticBody(root), ssl, localTLS);
+  return buildSite(host, staticBody(root), opts);
 }
 
 function sitePaths(service: string): { available: string; enabled: string } {
@@ -194,31 +216,41 @@ export async function issueCertificate(
  *
  * On an edge box, the site and its SNI route are applied together (and
  * rolled back together), so the router never points at a listener that
- * isn't there. With SSL off, any route left from when it was on is removed. */
+ * isn't there. With SSL off, any route left from when it was on is removed.
+ * `behindEdge` is the address of the edge in front of this server, if any. */
 async function deploySite(
   target: SSHTarget,
   service: string,
   host: string,
-  build: (ssl: boolean, localTLS: boolean) => string,
+  build: (opts: SiteOptions) => string,
   ssl?: SSLConfig,
+  behindEdge?: string,
 ): Promise<void> {
   const onEdge = await isEdgeBootstrapped(target);
 
   if (ssl && !(await hasCertificate(target, host))) {
-    await writeAndReload(target, service, build(false, false));
+    await writeAndReload(target, service, build({ behindEdge }));
     await issueCertificate(target, host, ssl);
   }
 
   if (!onEdge) {
-    await writeAndReload(target, service, build(Boolean(ssl), false));
+    await writeAndReload(
+      target,
+      service,
+      build({ ssl: Boolean(ssl), behindEdge }),
+    );
     return;
   }
 
   const { available, enabled } = sitePaths(service);
   await applyNginxChanges(target, [
-    { path: available, content: build(Boolean(ssl), true), enableAs: enabled },
+    {
+      path: available,
+      content: build({ ssl: Boolean(ssl), onEdge: true }),
+      enableAs: enabled,
+    },
     ssl
-      ? { path: edgeRoutePath(host), content: buildEdgeRoute(host, EDGE_LOCAL_TLS) }
+      ? { path: edgeRoutePath(host), content: buildEdgeRoute(host, EDGE_LOCAL_PP) }
       : { path: edgeRoutePath(host), remove: true },
   ]);
 }
@@ -229,13 +261,15 @@ export async function deployProxyConfig(
   host: string,
   port: number,
   ssl?: SSLConfig,
+  behindEdge?: string,
 ): Promise<void> {
   await deploySite(
     target,
     service,
     host,
-    (withSSL, localTLS) => buildServerBlock(host, port, withSSL, localTLS),
+    (opts) => buildServerBlock(host, port, opts),
     ssl,
+    behindEdge,
   );
 }
 
@@ -245,6 +279,7 @@ export async function deployStaticProxyConfig(
   host: string,
   root: string,
   ssl?: SSLConfig,
+  behindEdge?: string,
 ): Promise<void> {
   // nginx's worker runs as www-data, not the SSH user — if deploy_path defaults
   // to ~/apps/<service> under a root-owned $HOME (mode 700), www-data can't
@@ -256,9 +291,9 @@ export async function deployStaticProxyConfig(
     target,
     service,
     host,
-    (withSSL, localTLS) =>
-      buildStaticServerBlock(host, root, withSSL, localTLS),
+    (opts) => buildStaticServerBlock(host, root, opts),
     ssl,
+    behindEdge,
   );
 }
 
