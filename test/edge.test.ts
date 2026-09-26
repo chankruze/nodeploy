@@ -14,7 +14,10 @@ const {
   buildEdgeStreamConfig,
   deployEdgeRoute,
   findPort443Conflicts,
+  localizeNodeploySite,
+  planLocalTLSMigration,
 } = await import("../src/lib/edge.js");
+const { buildServerBlock } = await import("../src/lib/nginx.js");
 
 const edge: SSHTarget = { host: "192.168.0.8", user: "root", port: 22 };
 
@@ -37,8 +40,8 @@ describe("edge config builders", () => {
     expect(block).toContain("proxy_set_header Host $host;");
   });
 
-  it("routes a hostname to the upstream's 443", () => {
-    expect(buildEdgeRoute("bob.geekofia.cloud", "192.168.0.12")).toContain(
+  it("routes a hostname to an upstream address", () => {
+    expect(buildEdgeRoute("bob.geekofia.cloud", "192.168.0.12:443")).toContain(
       "bob.geekofia.cloud 192.168.0.12:443;",
     );
   });
@@ -90,6 +93,63 @@ server {
   });
 });
 
+describe("localizeNodeploySite", () => {
+  it("moves a nodeploy HTTPS site from 443 to the local TLS port, keeping everything else", () => {
+    const site = buildServerBlock("payroll.example.com", 8080, true);
+    const result = localizeNodeploySite(site);
+
+    expect(result?.host).toBe("payroll.example.com");
+    expect(result?.content).toBe(
+      site.replace("listen 443 ssl http2;", "listen 127.0.0.1:8443 ssl http2;"),
+    );
+  });
+
+  it("leaves alone anything that isn't the exact shape nodeploy writes", () => {
+    // Hand-written TLS site: different listen form, non-letsencrypt cert.
+    expect(
+      localizeNodeploySite(
+        "server {\n    listen 443 ssl;\n    server_name shop.example.com;\n    ssl_certificate /etc/ssl/shop.pem;\n}\n",
+      ),
+    ).toBeNull();
+    // nodeploy's shape plus an extra IPv6 443 listener someone added.
+    const tweaked = buildServerBlock("payroll.example.com", 8080, true).replace(
+      "listen 443 ssl http2;",
+      "listen 443 ssl http2;\n    listen [::]:443 ssl http2;",
+    );
+    expect(localizeNodeploySite(tweaked)).toBeNull();
+    // Plain-HTTP nodeploy site: nothing on 443 to move.
+    expect(localizeNodeploySite(buildServerBlock("a.example.com", 3000))).toBeNull();
+  });
+});
+
+describe("planLocalTLSMigration", () => {
+  it("moves nodeploy HTTPS sites to the local TLS port with a route each, and reports anything else as foreign", () => {
+    const payroll = buildServerBlock("payroll.example.com", 8080, true);
+    const dump = [
+      "# configuration file /etc/nginx/sites-enabled/payroll.conf:",
+      payroll,
+      "# configuration file /etc/nginx/sites-enabled/shop.conf:",
+      "server {\n    listen 443 ssl;\n    server_name shop.example.com;\n}",
+      "# configuration file /etc/nginx/sites-enabled/plain.conf:",
+      buildServerBlock("plain.example.com", 3000),
+    ].join("\n");
+
+    const plan = planLocalTLSMigration(dump);
+
+    expect(plan.hosts).toEqual(["payroll.example.com"]);
+    expect(plan.foreign).toEqual(["/etc/nginx/sites-enabled/shop.conf"]);
+    expect(plan.ops).toHaveLength(2);
+    expect(plan.ops[0]).toMatchObject({ path: "/etc/nginx/sites-enabled/payroll.conf" });
+    expect((plan.ops[0] as { content: string }).content).toContain(
+      "listen 127.0.0.1:8443 ssl http2;",
+    );
+    expect(plan.ops[1]).toEqual({
+      path: "/etc/nginx/stream.d/nodeploy-routes/payroll.example.com.conf",
+      content: "# Managed by nodeploy.\npayroll.example.com 127.0.0.1:8443;\n",
+    });
+  });
+});
+
 describe("buildApplyScript", () => {
   it("validates with nginx -t before reloading, and restores on failure", () => {
     const script = buildApplyScript([
@@ -101,7 +161,7 @@ describe("buildApplyScript", () => {
     expect(script).toContain('sudo cp -p "/etc/a.conf" "/etc/a.conf.nodeploy-prev"');
     expect(script).toContain('sudo ln -sf "/etc/a.conf" "/etc/enabled/a.conf"');
     expect(script).toContain(
-      'if [ -e "/etc/a.conf.nodeploy-prev" ]; then sudo mv "/etc/a.conf.nodeploy-prev" "/etc/a.conf"; else sudo rm -f "/etc/a.conf"; fi',
+      'if [ -e "/etc/a.conf.nodeploy-prev" ]; then sudo cp -p "/etc/a.conf.nodeploy-prev" "/etc/a.conf"; sudo rm -f "/etc/a.conf.nodeploy-prev"; else sudo rm -f "/etc/a.conf"; fi',
     );
   });
 
@@ -178,6 +238,22 @@ describe("bootstrapEdge", () => {
     expect(script).toContain("if ! sudo grep -qF 'include /etc/nginx/stream.d/*.conf;' \"/etc/nginx/nginx.conf\"; then");
     expect(script).toContain(`sudo tee "${EDGE_STREAM_CONF}"`);
     expect(script).toContain("ssl_preread on;");
+  });
+
+  it("moves nodeploy HTTPS apps already on the box to the local TLS port in the same apply", async () => {
+    execa.mockResolvedValueOnce({
+      stdout: `# configuration file /etc/nginx/sites-enabled/payroll.conf:\n${buildServerBlock("payroll.example.com", 8080, true)}`,
+    });
+    execa.mockResolvedValue({ stdout: "" });
+
+    const moved = await bootstrapEdge(edge);
+
+    expect(moved).toEqual(["payroll.example.com"]);
+    const script = scriptInput(2);
+    expect(script).toContain(`sudo tee "${EDGE_STREAM_CONF}"`);
+    expect(script).toContain('sudo tee "/etc/nginx/sites-enabled/payroll.conf"');
+    expect(script).toContain("listen 127.0.0.1:8443 ssl http2;");
+    expect(script).toContain("payroll.example.com 127.0.0.1:8443;");
   });
 
   it("refuses when something else already listens on 443, naming the file", async () => {

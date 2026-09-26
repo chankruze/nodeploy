@@ -132,8 +132,13 @@ export function registerSetupCommand(program: Command): void {
                 if (await ensureNginxStreamModule(edgeTarget)) {
                   success("  nginx stream module installed on edge");
                 }
-                await bootstrapEdge(edgeTarget);
+                const moved = await bootstrapEdge(edgeTarget);
                 success("  Edge set up to route HTTPS by hostname (SNI)");
+                for (const host of moved) {
+                  info(
+                    `  Moved ${host} (already on the edge) off 443 to the local TLS port, routed via SNI`,
+                  );
+                }
               }
             } catch (error) {
               warn(

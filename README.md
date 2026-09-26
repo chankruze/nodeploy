@@ -195,9 +195,9 @@ The edge never holds certificates or runs apps — it just routes by hostname:
 
 Things to know:
 
-- **The SNI router owns port 443 on the edge.** `setup` refuses (naming the files) if something else already listens on 443 there. If the edge needs to serve HTTPS sites of its own, have them listen on `127.0.0.1:8443` — hostnames with no route are sent there.
+- **The SNI router owns port 443 on the edge.** nodeploy's own HTTPS apps already on the edge are moved off it automatically (see below); `setup` refuses, naming the files, if anything *else* listens on 443 there. To keep such a hand-written HTTPS site, have it listen on `127.0.0.1:8443` and add a `<host> 127.0.0.1:8443;` route file for it in `/etc/nginx/stream.d/nodeploy-routes/`.
 - **Client IPs:** over HTTPS, upstream apps see the edge's IP as the client (passthrough can't add `X-Forwarded-For` without decrypting). Over HTTP, the real IP is in `X-Forwarded-For`.
-- **Apps running on the edge box itself** don't use `edge` — nodeploy rejects `edge.server` equal to `server`. (HTTPS for those alongside the SNI router isn't supported yet.)
+- **Apps running on the edge box itself** don't set `edge` (nodeploy rejects `edge.server` equal to `server`) — they're configured like any other app, `ssl` included. `deploy` detects that its server is an edge (it has `/etc/nginx/stream.d/nodeploy.conf`) and has the app's HTTPS block listen on `127.0.0.1:8443` instead of 443, with a `<host> 127.0.0.1:8443;` route so the SNI router sends that hostname back to it — applied together, in one transaction. If a box already has nodeploy HTTPS apps on 443 when it *becomes* an edge, `setup` moves them to `127.0.0.1:8443` with routes in the same transaction as installing the router. Over HTTPS, those apps see `127.0.0.1` as the client IP.
 - Nothing is removed automatically when an app goes away; delete its `edge.<host>.conf` (both `sites-available/` and `sites-enabled/`) and route file on the edge, then `sudo systemctl reload nginx`.
 
 ### Overriding the detected start script

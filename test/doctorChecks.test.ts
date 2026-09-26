@@ -11,6 +11,7 @@ const {
   checkCertificate,
   checkEdgeRouting,
   checkEdgeUpstream,
+  checkLocalEdgeRoute,
   checkNginx,
   checkNode,
   checkPM2,
@@ -184,6 +185,34 @@ describe("doctorChecks", () => {
     const result = await checkEdgeUpstream(edgeTarget, "bob.example.com", "192.168.0.12");
     expect(result.ok).toBe(false);
     expect(result.message).toContain("can't reach 192.168.0.12:80");
+  });
+
+  it("checkLocalEdgeRoute is skipped (null) when the app's server isn't an edge", async () => {
+    execa.mockResolvedValueOnce({ stdout: "" });
+    expect(await checkLocalEdgeRoute(target, "payroll.example.com")).toBeNull();
+  });
+
+  it("checkLocalEdgeRoute is ok when the edge routes the host to the local TLS port", async () => {
+    execa.mockResolvedValueOnce({
+      stdout: "router\n# Managed by nodeploy.\npayroll.example.com 127.0.0.1:8443;\n",
+    });
+    const result = await checkLocalEdgeRoute(target, "payroll.example.com");
+    expect(result?.ok).toBe(true);
+  });
+
+  it("checkLocalEdgeRoute is optional when the edge has no route for the host yet", async () => {
+    execa.mockResolvedValueOnce({ stdout: "router\n" });
+    const result = await checkLocalEdgeRoute(target, "payroll.example.com");
+    expect(result?.ok).toBe(false);
+    expect(result?.optional).toBe(true);
+  });
+
+  it("runAllChecks drops the local edge check for ssl apps on non-edge servers", async () => {
+    execa.mockResolvedValue({ stdout: "notAfter=Dec 25 12:00:00 2099 GMT" });
+    const names = (
+      await runAllChecks(makeConfig({ proxy: { host: "api.example.com", ssl: {} }, port: 3000 }), target)
+    ).map((r) => r.name);
+    expect(names).not.toContain("Edge routing");
   });
 
   it("runAllChecks includes edge checks only when proxy.edge is set", async () => {

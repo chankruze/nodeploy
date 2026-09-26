@@ -1,5 +1,6 @@
 import { toEdgeSSHTarget } from "./deployConfig.js";
 import {
+  EDGE_LOCAL_TLS,
   EDGE_STREAM_CONF,
   edgeRoutePath,
   edgeSiteLink,
@@ -186,6 +187,42 @@ export async function checkEdgeRouting(
   };
 }
 
+/** For an HTTPS app deployed onto an edge box itself: checks the SNI router
+ * sends its host to the local TLS listener. Returns null when the server
+ * isn't an edge, since there's nothing to check. */
+export async function checkLocalEdgeRoute(
+  target: SSHTarget,
+  host: string,
+): Promise<DoctorCheckResult | null> {
+  const name = "Edge routing";
+  let stdout: string;
+  try {
+    ({ stdout } = await sshExec(
+      target,
+      `if [ -f "${EDGE_STREAM_CONF}" ]; then echo router; cat "${edgeRoutePath(host)}" 2>/dev/null; fi`,
+    ));
+  } catch {
+    return null;
+  }
+
+  if (!stdout.includes("router")) return null;
+
+  if (!stdout.includes(`${host} ${EDGE_LOCAL_TLS};`)) {
+    return {
+      name,
+      ok: false,
+      message: `${target.host} is an edge, but its SNI router doesn't send ${host} to ${EDGE_LOCAL_TLS} yet — \`nodeploy deploy\` writes the route`,
+      optional: true,
+    };
+  }
+
+  return {
+    name,
+    ok: true,
+    message: `${target.host} is an edge; HTTPS for ${host} is routed to ${EDGE_LOCAL_TLS} on the same box`,
+  };
+}
+
 /** The edge forwards to the upstream's nginx on 80/443, so the upstream has
  * to be reachable from the edge — not just from wherever doctor runs. */
 export async function checkEdgeUpstream(
@@ -299,7 +336,7 @@ export async function runAllChecks(
     return [connection];
   }
 
-  const checks = [
+  const checks: Promise<DoctorCheckResult | null>[] = [
     checkNode(target),
     checkNpm(target),
     checkPnpm(target),
@@ -319,6 +356,10 @@ export async function runAllChecks(
     checks.push(checkCertbot(target), checkCertificate(target, config.proxy.host));
   }
 
+  if (config.proxy?.ssl && !config.proxy.edge) {
+    checks.push(checkLocalEdgeRoute(target, config.proxy.host));
+  }
+
   if (config.proxy?.edge) {
     const { host, ssl, edge } = config.proxy;
     const edgeTarget = toEdgeSSHTarget(edge);
@@ -328,5 +369,9 @@ export async function runAllChecks(
     );
   }
 
-  return [connection, ...(await Promise.all(checks))];
+  const results = await Promise.all(checks);
+  return [
+    connection,
+    ...results.filter((result): result is DoctorCheckResult => result !== null),
+  ];
 }

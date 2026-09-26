@@ -79,12 +79,12 @@ function validateEdgeConfig(
     );
   }
 
-  // The edge's port-80 forward and the app's own site would both claim
-  // proxy.host on the same nginx, and the edge's 443 listener would collide
-  // with the app's own HTTPS block.
+  // The edge's port-80 forward would claim proxy.host on the same nginx as
+  // the app's own site. Apps on the edge need no `edge` at all: deploy
+  // detects the edge's SNI router and routes their HTTPS locally.
   if (edgeRaw.server === server) {
     throw new Error(
-      "nodeploy.yml: \"proxy.edge.server\" is the same as \"server\" — apps running on the edge box itself don't need `edge`; remove it",
+      "nodeploy.yml: \"proxy.edge.server\" is the same as \"server\" — apps running on the edge box itself don't need `edge` (nodeploy detects the edge and routes their HTTPS locally); remove it",
     );
   }
 

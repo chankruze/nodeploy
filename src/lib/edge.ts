@@ -1,11 +1,12 @@
 import { sshExec } from "./ssh.js";
 import type { SSHTarget } from "../types.js";
 
-// An "edge" is the one box the router forwards public 80/443 to. It never
-// runs apps or holds certs itself — it routes each app's hostname on to the
-// server that does: plain HTTP (including ACME challenges) via a normal
-// port-80 server block, and HTTPS via TLS SNI passthrough on 443, so each
-// upstream's own nginx keeps terminating TLS with its own certificate.
+// An "edge" is the one box the router forwards public 80/443 to. It routes
+// each app's hostname on to the server running it: plain HTTP (including
+// ACME challenges) via a normal port-80 server block, and HTTPS via TLS SNI
+// passthrough on 443, so each upstream's own nginx keeps terminating TLS
+// with its own certificate. HTTPS apps running on the edge itself are just
+// one more upstream: they listen on EDGE_LOCAL_TLS, routed there by host.
 //
 // Every per-app file is keyed by hostname, not service name — hosts are
 // unique by definition, while two apps on different upstreams can easily
@@ -14,10 +15,16 @@ import type { SSHTarget } from "../types.js";
 export const EDGE_STREAM_CONF = "/etc/nginx/stream.d/nodeploy.conf";
 export const EDGE_ROUTES_DIR = "/etc/nginx/stream.d/nodeploy-routes";
 
-/** Where hostnames with no route go. Nothing listens here unless the edge
- * serves HTTPS itself, in which case those sites must move here, since the
- * SNI router owns 443. */
+/** Where HTTPS apps running on the edge itself listen, since the SNI router
+ * owns 443 — nodeploy routes their hostnames here. Also where hostnames with
+ * no route go. */
 export const EDGE_LOCAL_TLS = "127.0.0.1:8443";
+
+// `listen ... http2` rather than the newer `http2 on;` directive, which
+// nginx < 1.25.1 (e.g. Ubuntu 22.04's 1.18) rejects outright; newer nginx
+// only logs a deprecation warning for this form.
+export const PUBLIC_TLS_LISTEN = "listen 443 ssl http2;";
+export const LOCAL_TLS_LISTEN = `listen ${EDGE_LOCAL_TLS} ssl http2;`;
 
 const NGINX_CONF = "/etc/nginx/nginx.conf";
 const STREAM_INCLUDE = "include /etc/nginx/stream.d/*.conf;";
@@ -64,9 +71,11 @@ server {
 `;
 }
 
-export function buildEdgeRoute(host: string, upstream: string): string {
+/** `address` is host:port — `<upstream>:443` for a remote app, or
+ * EDGE_LOCAL_TLS for one running on the edge itself. */
+export function buildEdgeRoute(host: string, address: string): string {
   return `# Managed by nodeploy.
-${host} ${upstream}:443;
+${host} ${address};
 `;
 }
 
@@ -92,30 +101,102 @@ server {
 `;
 }
 
+/** Splits `nginx -T` output into each config file's path and contents. */
+export function parseNginxDump(nginxDump: string): Map<string, string> {
+  const files = new Map<string, string>();
+  let currentFile: string | null = null;
+  let lines: string[] = [];
+
+  const flush = () => {
+    if (currentFile !== null) files.set(currentFile, lines.join("\n"));
+  };
+
+  for (const line of nginxDump.split("\n")) {
+    const header = line.match(/^# configuration file (.+):$/);
+    if (header) {
+      flush();
+      currentFile = header[1];
+      lines = [];
+    } else {
+      lines.push(line);
+    }
+  }
+  flush();
+
+  return files;
+}
+
+function listensOn443(content: string): boolean {
+  return content.split("\n").some((rawLine) => {
+    const listen = rawLine.replace(/#.*/, "").match(/^\s*listen\s+([^\s;]+)/);
+    return (
+      listen !== null && (listen[1] === "443" || listen[1].endsWith(":443"))
+    );
+  });
+}
+
 /** Returns the config files (from `nginx -T` output) with an active listener
  * on port 443, other than `ownFile`. The SNI router needs 443 to itself. */
 export function findPort443Conflicts(nginxDump: string, ownFile: string): string[] {
-  const conflicts = new Set<string>();
-  let currentFile = "";
+  return [...parseNginxDump(nginxDump)]
+    .filter(([file, content]) => file !== ownFile && listensOn443(content))
+    .map(([file]) => file);
+}
 
-  for (const rawLine of nginxDump.split("\n")) {
-    const header = rawLine.match(/^# configuration file (.+):$/);
-    if (header) {
-      currentFile = header[1];
+/** If `content` is an HTTPS site nodeploy itself wrote (see nginx.ts), returns
+ * its host and the same site listening on EDGE_LOCAL_TLS instead of 443.
+ * Returns null for anything else, which the caller must not touch. */
+export function localizeNodeploySite(
+  content: string,
+): { host: string; content: string } | null {
+  if (!content.includes(PUBLIC_TLS_LISTEN)) return null;
+  if (!content.includes("ssl_certificate /etc/letsencrypt/live/")) return null;
+
+  const host = content.match(/^\s*server_name\s+([^\s;]+);/m)?.[1];
+  if (!host) return null;
+
+  const localized = content.replace(PUBLIC_TLS_LISTEN, LOCAL_TLS_LISTEN);
+  // Any other 443 listener means it isn't the plain shape nodeploy writes.
+  if (listensOn443(localized)) return null;
+
+  return { host, content: localized };
+}
+
+/** Plans moving HTTPS sites already on 443 off it so the SNI router can take
+ * over: nodeploy's own app sites move to EDGE_LOCAL_TLS with a route each;
+ * anything else is returned as `foreign`, since rewriting it could break it.
+ * Writes go through the sites-enabled path nginx actually loaded, so they
+ * land wherever its symlink points. */
+export function planLocalTLSMigration(nginxDump: string): {
+  ops: NginxFileOp[];
+  hosts: string[];
+  foreign: string[];
+} {
+  const files = parseNginxDump(nginxDump);
+  const ops: NginxFileOp[] = [];
+  const hosts: string[] = [];
+  const foreign: string[] = [];
+
+  for (const file of findPort443Conflicts(nginxDump, EDGE_STREAM_CONF)) {
+    const localized = file.startsWith("/etc/nginx/sites-enabled/")
+      ? localizeNodeploySite(files.get(file) ?? "")
+      : null;
+    if (!localized) {
+      foreign.push(file);
       continue;
     }
 
-    const line = rawLine.replace(/#.*/, "");
-    const listen = line.match(/^\s*listen\s+([^\s;]+)/);
-    if (!listen || currentFile === ownFile) continue;
-
-    const address = listen[1];
-    if (address === "443" || address.endsWith(":443")) {
-      conflicts.add(currentFile);
-    }
+    ops.push(
+      { path: file, content: localized.content },
+      {
+        path: edgeRoutePath(localized.host),
+        content: buildEdgeRoute(localized.host, EDGE_LOCAL_TLS),
+      },
+    );
+    hosts.push(localized.host);
   }
 
-  return [...conflicts];
+  return { ops, hosts, foreign };
 }
 
 export type NginxFileOp =
@@ -174,7 +255,9 @@ export function buildApplyScript(ops: NginxFileOp[]): string {
 
     restore.push(
       `  if [ "$touched_${i}" = 1 ]; then`,
-      `    if [ -e "${prev}" ]; then sudo mv "${prev}" "${op.path}"; else sudo rm -f "${op.path}"; fi`,
+      // cp, not mv: writes back through op.path if it's a symlink, rather
+      // than replacing the link itself with a regular file.
+      `    if [ -e "${prev}" ]; then sudo cp -p "${prev}" "${op.path}"; sudo rm -f "${prev}"; else sudo rm -f "${op.path}"; fi`,
     );
     if (link) {
       restore.push(
@@ -223,14 +306,16 @@ export async function isEdgeBootstrapped(target: SSHTarget): Promise<boolean> {
 }
 
 /** One-time edge setup for HTTPS routing: the top-level stream {} include and
- * the SNI router. Assumes nginx + its stream module are installed. Refuses
- * (rather than silently fighting) if something else already listens on 443. */
-export async function bootstrapEdge(target: SSHTarget): Promise<void> {
+ * the SNI router. Assumes nginx + its stream module are installed. nodeploy
+ * HTTPS apps already on this box move to EDGE_LOCAL_TLS in the same
+ * transaction (returned as the hosts moved); anything else on 443 makes
+ * this refuse rather than silently fight over the port. */
+export async function bootstrapEdge(target: SSHTarget): Promise<string[]> {
   const { stdout } = await sshExec(target, "sudo nginx -T 2>/dev/null");
-  const conflicts = findPort443Conflicts(stdout, EDGE_STREAM_CONF);
-  if (conflicts.length > 0) {
+  const migration = planLocalTLSMigration(stdout);
+  if (migration.foreign.length > 0) {
     throw new Error(
-      `port 443 on ${target.host} is already used by ${conflicts.join(", ")} — the edge's SNI router needs 443 to itself. Remove those listeners, or move HTTPS sites served by the edge itself to ${EDGE_LOCAL_TLS}, then re-run setup.`,
+      `port 443 on ${target.host} is already used by ${migration.foreign.join(", ")} — the edge's SNI router needs 443 to itself. Remove those listeners, or move them to ${EDGE_LOCAL_TLS} and add a route for their hostname in ${EDGE_ROUTES_DIR}/, then re-run setup.`,
     );
   }
 
@@ -241,7 +326,9 @@ export async function bootstrapEdge(target: SSHTarget): Promise<void> {
       appendIfMissing: { marker: STREAM_INCLUDE, content: STREAM_BLOCK },
     },
     { path: EDGE_STREAM_CONF, content: buildEdgeStreamConfig() },
+    ...migration.ops,
   ]);
+  return migration.hosts;
 }
 
 /** Points `host` at `upstream` on the edge: always the port-80 forward, plus
@@ -266,7 +353,10 @@ export async function deployEdgeRoute(
       enableAs: edgeSiteLink(host),
     },
     ssl
-      ? { path: edgeRoutePath(host), content: buildEdgeRoute(host, upstream) }
+      ? {
+          path: edgeRoutePath(host),
+          content: buildEdgeRoute(host, `${upstream}:443`),
+        }
       : { path: edgeRoutePath(host), remove: true },
   ]);
 }

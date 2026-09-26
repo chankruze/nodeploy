@@ -1,3 +1,12 @@
+import {
+  EDGE_LOCAL_TLS,
+  LOCAL_TLS_LISTEN,
+  PUBLIC_TLS_LISTEN,
+  applyNginxChanges,
+  buildEdgeRoute,
+  edgeRoutePath,
+  isEdgeBootstrapped,
+} from "./edge.js";
 import { sshExec } from "./ssh.js";
 import type { SSHTarget, SSLConfig } from "../types.js";
 
@@ -38,8 +47,15 @@ const ACME_LOCATION = `    location /.well-known/acme-challenge/ {
     }`;
 
 /** Wraps a site body in nginx server block(s). With `ssl`, port 80 only
- * answers ACME challenges and redirects to HTTPS, and the body moves to 443. */
-function buildSite(host: string, body: string, ssl: boolean): string {
+ * answers ACME challenges and redirects to HTTPS, and the body moves to 443
+ * — or, with `localTLS` (the app runs on an edge, whose SNI router owns
+ * 443), to EDGE_LOCAL_TLS, which the router forwards this host to. */
+function buildSite(
+  host: string,
+  body: string,
+  ssl: boolean,
+  localTLS: boolean,
+): string {
   if (!ssl) {
     return `server {
     listen 80;
@@ -53,9 +69,6 @@ ${body}
   }
 
   const certDir = certificateDir(host);
-  // `listen ... http2` rather than the newer `http2 on;` directive, which
-  // nginx < 1.25.1 (e.g. Ubuntu 22.04's 1.18) rejects outright; newer nginx
-  // only logs a deprecation warning for this form.
   return `server {
     listen 80;
     server_name ${host};
@@ -68,7 +81,7 @@ ${ACME_LOCATION}
 }
 
 server {
-    listen 443 ssl http2;
+    ${localTLS ? LOCAL_TLS_LISTEN : PUBLIC_TLS_LISTEN}
     server_name ${host};
 
     ssl_certificate ${certDir}/fullchain.pem;
@@ -83,16 +96,25 @@ export function buildServerBlock(
   host: string,
   port: number,
   ssl = false,
+  localTLS = false,
 ): string {
-  return buildSite(host, proxyBody(port), ssl);
+  return buildSite(host, proxyBody(port), ssl, localTLS);
 }
 
 export function buildStaticServerBlock(
   host: string,
   root: string,
   ssl = false,
+  localTLS = false,
 ): string {
-  return buildSite(host, staticBody(root), ssl);
+  return buildSite(host, staticBody(root), ssl, localTLS);
+}
+
+function sitePaths(service: string): { available: string; enabled: string } {
+  return {
+    available: `/etc/nginx/sites-available/${service}.conf`,
+    enabled: `/etc/nginx/sites-enabled/${service}.conf`,
+  };
 }
 
 async function writeAndReload(
@@ -100,8 +122,7 @@ async function writeAndReload(
   service: string,
   block: string,
 ): Promise<void> {
-  const available = `/etc/nginx/sites-available/${service}.conf`;
-  const enabled = `/etc/nginx/sites-enabled/${service}.conf`;
+  const { available, enabled } = sitePaths(service);
 
   const remoteCommand = [
     `sudo tee "${available}" > /dev/null`,
@@ -169,19 +190,37 @@ export async function issueCertificate(
  * none exists yet. A 443 block pointing at a missing cert fails `nginx -t`,
  * so first-time issuance goes through an HTTP-only config that can answer
  * the ACME challenge. certbot only ever writes to /etc/letsencrypt — never
- * to our config — so redeploying can't clobber anything it set up. */
+ * to our config — so redeploying can't clobber anything it set up.
+ *
+ * On an edge box, the site and its SNI route are applied together (and
+ * rolled back together), so the router never points at a listener that
+ * isn't there. With SSL off, any route left from when it was on is removed. */
 async function deploySite(
   target: SSHTarget,
   service: string,
   host: string,
-  build: (ssl: boolean) => string,
+  build: (ssl: boolean, localTLS: boolean) => string,
   ssl?: SSLConfig,
 ): Promise<void> {
+  const onEdge = await isEdgeBootstrapped(target);
+
   if (ssl && !(await hasCertificate(target, host))) {
-    await writeAndReload(target, service, build(false));
+    await writeAndReload(target, service, build(false, false));
     await issueCertificate(target, host, ssl);
   }
-  await writeAndReload(target, service, build(Boolean(ssl)));
+
+  if (!onEdge) {
+    await writeAndReload(target, service, build(Boolean(ssl), false));
+    return;
+  }
+
+  const { available, enabled } = sitePaths(service);
+  await applyNginxChanges(target, [
+    { path: available, content: build(Boolean(ssl), true), enableAs: enabled },
+    ssl
+      ? { path: edgeRoutePath(host), content: buildEdgeRoute(host, EDGE_LOCAL_TLS) }
+      : { path: edgeRoutePath(host), remove: true },
+  ]);
 }
 
 export async function deployProxyConfig(
@@ -195,7 +234,7 @@ export async function deployProxyConfig(
     target,
     service,
     host,
-    (withSSL) => buildServerBlock(host, port, withSSL),
+    (withSSL, localTLS) => buildServerBlock(host, port, withSSL, localTLS),
     ssl,
   );
 }
@@ -217,7 +256,8 @@ export async function deployStaticProxyConfig(
     target,
     service,
     host,
-    (withSSL) => buildStaticServerBlock(host, root, withSSL),
+    (withSSL, localTLS) =>
+      buildStaticServerBlock(host, root, withSSL, localTLS),
     ssl,
   );
 }
