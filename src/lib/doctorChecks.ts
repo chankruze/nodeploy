@@ -1,3 +1,9 @@
+import { toEdgeSSHTarget } from "./deployConfig.js";
+import {
+  EDGE_STREAM_CONF,
+  edgeRoutePath,
+  edgeSiteLink,
+} from "./edge.js";
 import { certificateDir } from "./nginx.js";
 import { withNvm } from "./remoteEnv.js";
 import { sshExec, sshTest } from "./ssh.js";
@@ -128,6 +134,85 @@ export async function checkCertificate(
   };
 }
 
+/** Checks the edge has this app's routes in place (and, for HTTPS, the SNI
+ * router), without requiring them before the first deploy writes them. */
+export async function checkEdgeRouting(
+  edgeTarget: SSHTarget,
+  host: string,
+  upstream: string,
+  ssl: boolean,
+): Promise<DoctorCheckResult> {
+  const name = "Edge routing";
+  let present: string[];
+  try {
+    const { stdout } = await sshExec(
+      edgeTarget,
+      [
+        `if [ -f "${EDGE_STREAM_CONF}" ]; then echo router; fi`,
+        `if [ -e "${edgeSiteLink(host)}" ]; then echo site; fi`,
+        `if [ -f "${edgeRoutePath(host)}" ]; then echo route; fi`,
+      ].join("; "),
+    );
+    present = stdout.split("\n").map((line) => line.trim());
+  } catch {
+    return {
+      name,
+      ok: false,
+      message: `could not connect to edge ${edgeTarget.user}@${edgeTarget.host}:${edgeTarget.port}`,
+    };
+  }
+
+  if (ssl && !present.includes("router")) {
+    return {
+      name,
+      ok: false,
+      message: `edge ${edgeTarget.host} isn't set up for HTTPS routing — run \`nodeploy setup\``,
+    };
+  }
+
+  if (!present.includes("site") || (ssl && !present.includes("route"))) {
+    return {
+      name,
+      ok: false,
+      message: `no route for ${host} on edge ${edgeTarget.host} yet — \`nodeploy deploy\` writes it`,
+      optional: true,
+    };
+  }
+
+  return {
+    name,
+    ok: true,
+    message: `${edgeTarget.host} routes ${host} → ${upstream} (${ssl ? "http + https" : "http"})`,
+  };
+}
+
+/** The edge forwards to the upstream's nginx on 80/443, so the upstream has
+ * to be reachable from the edge — not just from wherever doctor runs. */
+export async function checkEdgeUpstream(
+  edgeTarget: SSHTarget,
+  host: string,
+  upstream: string,
+): Promise<DoctorCheckResult> {
+  const name = "Edge → upstream";
+  try {
+    const { stdout } = await sshExec(
+      edgeTarget,
+      `curl -s -o /dev/null -m 5 -w '%{http_code}' -H "Host: ${host}" "http://${upstream}/"`,
+    );
+    const code = stdout.trim();
+    if (code !== "000" && code !== "") {
+      return { name, ok: true, message: `${upstream}:80 reachable from edge (HTTP ${code})` };
+    }
+  } catch {
+    // curl exits non-zero on connection failure; fall through.
+  }
+  return {
+    name,
+    ok: false,
+    message: `edge ${edgeTarget.host} can't reach ${upstream}:80 — check proxy.edge.upstream and the network between them`,
+  };
+}
+
 export async function checkDiskSpace(
   target: SSHTarget,
 ): Promise<DoctorCheckResult> {
@@ -232,6 +317,15 @@ export async function runAllChecks(
 
   if (config.proxy?.ssl) {
     checks.push(checkCertbot(target), checkCertificate(target, config.proxy.host));
+  }
+
+  if (config.proxy?.edge) {
+    const { host, ssl, edge } = config.proxy;
+    const edgeTarget = toEdgeSSHTarget(edge);
+    checks.push(
+      checkEdgeRouting(edgeTarget, host, edge.upstream, Boolean(ssl)),
+      checkEdgeUpstream(edgeTarget, host, edge.upstream),
+    );
   }
 
   return [connection, ...(await Promise.all(checks))];

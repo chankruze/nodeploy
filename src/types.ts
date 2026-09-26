@@ -38,9 +38,20 @@ export interface SSLConfig {
   email?: string;
 }
 
+/** A front-door nginx box that the router forwards public 80/443 to, which
+ * routes each app's hostname on to the server actually running it. */
+export interface EdgeConfig {
+  server: string;
+  /** Defaults to the app's own `ssh` block. */
+  ssh: SSHConfig;
+  /** Address the edge uses to reach this app's server. Defaults to `server`. */
+  upstream: string;
+}
+
 export interface ProxyConfig {
   host: string;
   ssl?: SSLConfig;
+  edge?: EdgeConfig;
 }
 
 /** Shape of a per-app `nodeploy.yml` file. */

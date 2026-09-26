@@ -104,6 +104,29 @@ export async function ensureCertbot(target: SSHTarget): Promise<boolean> {
   return true;
 }
 
+/** Returns true if nginx's stream module (for TLS SNI routing on an edge)
+ * had to be installed. Requires passwordless sudo. Debian/Ubuntu ship it as
+ * a separate dynamic-module package; a build with it compiled in statically
+ * (`--with-stream`, not `=dynamic`) needs nothing. */
+export async function ensureNginxStreamModule(
+  target: SSHTarget,
+): Promise<boolean> {
+  const present = await sshExec(
+    target,
+    "ls /etc/nginx/modules-enabled/ 2>/dev/null | grep -q stream || nginx -V 2>&1 | grep -qE -- '--with-stream( |$)'",
+  )
+    .then(() => true)
+    .catch(() => false);
+  if (present) return false;
+
+  await sshExec(
+    target,
+    "sudo apt-get update && sudo apt-get install -y libnginx-mod-stream",
+    { stdio: "inherit" },
+  );
+  return true;
+}
+
 export async function ensureDeployPath(
   target: SSHTarget,
   deployPath: string,

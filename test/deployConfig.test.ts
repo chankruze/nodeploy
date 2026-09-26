@@ -235,6 +235,81 @@ describe("validateDeployConfig", () => {
     ).toThrow(/proxy.ssl.email/);
   });
 
+  it("accepts proxy.edge, defaulting its ssh to the app's and upstream to server", () => {
+    const config = validateDeployConfig({
+      service: "api",
+      repo: "git@github.com:user/api.git",
+      server: "192.168.0.12",
+      ssh: { user: "root", keys: ["~/.ssh/id"] },
+      proxy: { host: "bob.example.com", edge: { server: "192.168.0.8" } },
+    });
+
+    expect(config.proxy?.edge).toEqual({
+      server: "192.168.0.8",
+      ssh: { user: "root", keys: ["~/.ssh/id"], port: 22 },
+      upstream: "192.168.0.12",
+    });
+  });
+
+  it("accepts an explicit proxy.edge.ssh and upstream", () => {
+    const config = validateDeployConfig({
+      service: "api",
+      repo: "git@github.com:user/api.git",
+      server: "192.168.0.12",
+      ssh: { user: "root", keys: ["~/.ssh/id"] },
+      proxy: {
+        host: "bob.example.com",
+        edge: {
+          server: "edge.example.com",
+          ssh: { user: "deploy", port: 2222 },
+          upstream: "10.0.0.12",
+        },
+      },
+    });
+
+    expect(config.proxy?.edge).toEqual({
+      server: "edge.example.com",
+      ssh: { user: "deploy", keys: undefined, port: 2222 },
+      upstream: "10.0.0.12",
+    });
+  });
+
+  it("throws when proxy.edge.server is missing", () => {
+    expect(() =>
+      validateDeployConfig({
+      service: "api",
+        repo: "git@github.com:user/api.git",
+        server: "192.168.0.12",
+        ssh: { user: "root", keys: ["~/.ssh/id"] },
+        proxy: { host: "bob.example.com", edge: {} },
+      }),
+    ).toThrow(/proxy.edge.server/);
+  });
+
+  it("throws when proxy.edge.ssh is invalid", () => {
+    expect(() =>
+      validateDeployConfig({
+      service: "api",
+        repo: "git@github.com:user/api.git",
+        server: "192.168.0.12",
+        ssh: { user: "root", keys: ["~/.ssh/id"] },
+        proxy: { host: "bob.example.com", edge: { server: "192.168.0.8", ssh: {} } },
+      }),
+    ).toThrow(/proxy.edge.ssh.user/);
+  });
+
+  it("throws when the edge is the app's own server", () => {
+    expect(() =>
+      validateDeployConfig({
+      service: "api",
+        repo: "git@github.com:user/api.git",
+        server: "192.168.0.12",
+        ssh: { user: "root", keys: ["~/.ssh/id"] },
+        proxy: { host: "bob.example.com", edge: { server: "192.168.0.12" } },
+      }),
+    ).toThrow(/same as "server"/);
+  });
+
   it("throws on non-object input", () => {
     expect(() => validateDeployConfig(null)).toThrow();
     expect(() => validateDeployConfig("nope")).toThrow();

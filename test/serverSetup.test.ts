@@ -10,6 +10,7 @@ const {
   ensureDeployPath,
   ensureGit,
   ensureNginx,
+  ensureNginxStreamModule,
   ensureNode,
   ensurePM2,
   ensurePM2Startup,
@@ -156,6 +157,20 @@ describe("serverSetup", () => {
     expect(installed).toBe(true);
     const [, args] = execa.mock.calls[1];
     expect(args[args.length - 1]).toContain("apt-get install -y certbot");
+  });
+
+  it("ensureNginxStreamModule skips install when the module is already available", async () => {
+    execa.mockResolvedValueOnce({});
+    expect(await ensureNginxStreamModule(target)).toBe(false);
+    expect(execa).toHaveBeenCalledTimes(1);
+  });
+
+  it("ensureNginxStreamModule installs libnginx-mod-stream when missing", async () => {
+    execa.mockRejectedValueOnce(new Error("exit 1"));
+    execa.mockResolvedValueOnce({});
+    expect(await ensureNginxStreamModule(target)).toBe(true);
+    const [, args] = execa.mock.calls[1];
+    expect(args[args.length - 1]).toContain("apt-get install -y libnginx-mod-stream");
   });
 
   it("ensureDeployPath makes the directory on the remote", async () => {

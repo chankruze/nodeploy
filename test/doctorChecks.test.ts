@@ -9,6 +9,8 @@ const {
   checkDeployPathWritable,
   checkMemory,
   checkCertificate,
+  checkEdgeRouting,
+  checkEdgeUpstream,
   checkNginx,
   checkNode,
   checkPM2,
@@ -142,6 +144,56 @@ describe("doctorChecks", () => {
     const names = withSSL.map((r) => r.name);
     expect(names).toContain("certbot");
     expect(names).toContain("TLS certificate");
+  });
+
+  const edgeTarget: SSHTarget = { host: "192.168.0.8", user: "root", port: 22 };
+
+  it("checkEdgeRouting is ok when router, site, and route are all present", async () => {
+    execa.mockResolvedValueOnce({ stdout: "router\nsite\nroute\n" });
+    const result = await checkEdgeRouting(edgeTarget, "bob.example.com", "192.168.0.12", true);
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain("bob.example.com → 192.168.0.12 (http + https)");
+  });
+
+  it("checkEdgeRouting fails hard when HTTPS is on but the edge has no SNI router", async () => {
+    execa.mockResolvedValueOnce({ stdout: "site\n" });
+    const result = await checkEdgeRouting(edgeTarget, "bob.example.com", "192.168.0.12", true);
+    expect(result.ok).toBe(false);
+    expect(result.optional).toBeUndefined();
+    expect(result.message).toContain("nodeploy setup");
+  });
+
+  it("checkEdgeRouting is optional before the first deploy writes the routes", async () => {
+    execa.mockResolvedValueOnce({ stdout: "router\n" });
+    const result = await checkEdgeRouting(edgeTarget, "bob.example.com", "192.168.0.12", true);
+    expect(result.ok).toBe(false);
+    expect(result.optional).toBe(true);
+  });
+
+  it("checkEdgeRouting doesn't need the SNI router or route for plain-HTTP apps", async () => {
+    execa.mockResolvedValueOnce({ stdout: "site\n" });
+    const result = await checkEdgeRouting(edgeTarget, "bob.example.com", "192.168.0.12", false);
+    expect(result.ok).toBe(true);
+  });
+
+  it("checkEdgeUpstream passes on any HTTP response from the upstream, fails on 000", async () => {
+    execa.mockResolvedValueOnce({ stdout: "404" });
+    expect((await checkEdgeUpstream(edgeTarget, "bob.example.com", "192.168.0.12")).ok).toBe(true);
+
+    execa.mockRejectedValueOnce(Object.assign(new Error("exit 7"), { stdout: "000" }));
+    const result = await checkEdgeUpstream(edgeTarget, "bob.example.com", "192.168.0.12");
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("can't reach 192.168.0.12:80");
+  });
+
+  it("runAllChecks includes edge checks only when proxy.edge is set", async () => {
+    execa.mockResolvedValue({ stdout: "router\nsite\nroute" });
+    const edge = { server: "192.168.0.8", ssh: { user: "root", port: 22 }, upstream: "192.168.0.12" };
+    const names = (
+      await runAllChecks(makeConfig({ proxy: { host: "bob.example.com", edge }, port: 3000 }), target)
+    ).map((r) => r.name);
+    expect(names).toContain("Edge routing");
+    expect(names).toContain("Edge → upstream");
   });
 
   it("runAllChecks short-circuits to just the connection check when SSH fails", async () => {

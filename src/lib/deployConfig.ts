@@ -7,7 +7,13 @@ import {
   DEFAULT_RUNTIME,
   DEFAULT_SSH_PORT,
 } from "../constants.js";
-import type { DeployConfig, Runtime, SSHTarget } from "../types.js";
+import type {
+  DeployConfig,
+  EdgeConfig,
+  Runtime,
+  SSHConfig,
+  SSHTarget,
+} from "../types.js";
 
 // `~` only expands via shell tilde-expansion, which doesn't happen when a path
 // is interpolated inside a double-quoted string (as every remote command here
@@ -16,6 +22,80 @@ function normalizeHomePath(deployPath: string): string {
   if (deployPath === "~") return "$HOME";
   if (deployPath.startsWith("~/")) return `$HOME/${deployPath.slice(2)}`;
   return deployPath;
+}
+
+function validateSSHConfig(raw: unknown, key: string): SSHConfig {
+  if (typeof raw !== "object" || raw === null) {
+    throw new Error(`nodeploy.yml: "${key}" must be an object`);
+  }
+
+  const sshRaw = raw as Record<string, unknown>;
+  if (typeof sshRaw.user !== "string" || sshRaw.user.length === 0) {
+    throw new Error(`nodeploy.yml: "${key}.user" must be a non-empty string`);
+  }
+
+  if (sshRaw.keys !== undefined) {
+    if (
+      !Array.isArray(sshRaw.keys) ||
+      !sshRaw.keys.every((k) => typeof k === "string")
+    ) {
+      throw new Error(`nodeploy.yml: "${key}.keys" must be an array of strings`);
+    }
+  }
+
+  if (sshRaw.port !== undefined && typeof sshRaw.port !== "number") {
+    throw new Error(`nodeploy.yml: "${key}.port" must be a number`);
+  }
+
+  return {
+    user: sshRaw.user,
+    keys: sshRaw.keys as string[] | undefined,
+    port: (sshRaw.port as number | undefined) ?? DEFAULT_SSH_PORT,
+  };
+}
+
+function validateEdgeConfig(
+  raw: unknown,
+  server: string,
+  ssh: SSHConfig,
+): EdgeConfig {
+  if (typeof raw !== "object" || raw === null) {
+    throw new Error("nodeploy.yml: \"proxy.edge\" must be an object");
+  }
+
+  const edgeRaw = raw as Record<string, unknown>;
+  if (typeof edgeRaw.server !== "string" || edgeRaw.server.length === 0) {
+    throw new Error(
+      "nodeploy.yml: \"proxy.edge.server\" must be a non-empty string",
+    );
+  }
+
+  if (
+    edgeRaw.upstream !== undefined &&
+    (typeof edgeRaw.upstream !== "string" || edgeRaw.upstream.length === 0)
+  ) {
+    throw new Error(
+      "nodeploy.yml: \"proxy.edge.upstream\" must be a non-empty string",
+    );
+  }
+
+  // The edge's port-80 forward and the app's own site would both claim
+  // proxy.host on the same nginx, and the edge's 443 listener would collide
+  // with the app's own HTTPS block.
+  if (edgeRaw.server === server) {
+    throw new Error(
+      "nodeploy.yml: \"proxy.edge.server\" is the same as \"server\" — apps running on the edge box itself don't need `edge`; remove it",
+    );
+  }
+
+  return {
+    server: edgeRaw.server,
+    ssh:
+      edgeRaw.ssh === undefined
+        ? ssh
+        : validateSSHConfig(edgeRaw.ssh, "proxy.edge.ssh"),
+    upstream: (edgeRaw.upstream as string | undefined) ?? server,
+  };
 }
 
 export function validateDeployConfig(raw: unknown): DeployConfig {
@@ -37,27 +117,7 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
     throw new Error("nodeploy.yml: \"server\" must be a non-empty string");
   }
 
-  if (typeof candidate.ssh !== "object" || candidate.ssh === null) {
-    throw new Error("nodeploy.yml: \"ssh\" must be an object");
-  }
-
-  const sshRaw = candidate.ssh as Record<string, unknown>;
-  if (typeof sshRaw.user !== "string" || sshRaw.user.length === 0) {
-    throw new Error("nodeploy.yml: \"ssh.user\" must be a non-empty string");
-  }
-
-  if (sshRaw.keys !== undefined) {
-    if (
-      !Array.isArray(sshRaw.keys) ||
-      !sshRaw.keys.every((k) => typeof k === "string")
-    ) {
-      throw new Error("nodeploy.yml: \"ssh.keys\" must be an array of strings");
-    }
-  }
-
-  if (sshRaw.port !== undefined && typeof sshRaw.port !== "number") {
-    throw new Error("nodeploy.yml: \"ssh.port\" must be a number");
-  }
+  const ssh = validateSSHConfig(candidate.ssh, "ssh");
 
   if (candidate.branch !== undefined && typeof candidate.branch !== "string") {
     throw new Error("nodeploy.yml: \"branch\" must be a string");
@@ -152,6 +212,10 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
         "nodeploy.yml: \"proxy.ssl\" must be true, false, or an object (e.g. ssl: { email: you@example.com })",
       );
     }
+
+    if (proxyRaw.edge !== undefined) {
+      proxy.edge = validateEdgeConfig(proxyRaw.edge, candidate.server, ssh);
+    }
   }
 
   const config: DeployConfig = {
@@ -159,11 +223,7 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
     repo: candidate.repo,
     branch: candidate.branch ?? DEFAULT_BRANCH,
     server: candidate.server,
-    ssh: {
-      user: sshRaw.user,
-      keys: sshRaw.keys as string[] | undefined,
-      port: (sshRaw.port as number | undefined) ?? DEFAULT_SSH_PORT,
-    },
+    ssh,
     deployPath: normalizeHomePath(
       (candidate.deploy_path as string | undefined) ??
         `$HOME/apps/${candidate.service}`,
@@ -194,11 +254,19 @@ export function loadDeployConfig(cwd: string, filename: string): DeployConfig {
   return validateDeployConfig(raw);
 }
 
-export function toSSHTarget(config: DeployConfig): SSHTarget {
+function sshTargetFor(host: string, ssh: SSHConfig): SSHTarget {
   return {
-    host: config.server,
-    user: config.ssh.user,
-    port: config.ssh.port ?? DEFAULT_SSH_PORT,
-    keys: config.ssh.keys,
+    host,
+    user: ssh.user,
+    port: ssh.port ?? DEFAULT_SSH_PORT,
+    keys: ssh.keys,
   };
+}
+
+export function toSSHTarget(config: DeployConfig): SSHTarget {
+  return sshTargetFor(config.server, config.ssh);
+}
+
+export function toEdgeSSHTarget(edge: EdgeConfig): SSHTarget {
+  return sshTargetFor(edge.server, edge.ssh);
 }

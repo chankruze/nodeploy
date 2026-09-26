@@ -1,7 +1,12 @@
 import type { Command } from "commander";
 import { DEPLOY_CONFIG_FILENAME } from "../constants.js";
 import { ensureRepo } from "../lib/git.js";
-import { loadDeployConfig, toSSHTarget } from "../lib/deployConfig.js";
+import {
+  loadDeployConfig,
+  toEdgeSSHTarget,
+  toSSHTarget,
+} from "../lib/deployConfig.js";
+import { deployEdgeRoute } from "../lib/edge.js";
 import { fail, info, success } from "../lib/logger.js";
 import { deployProxyConfig, deployStaticProxyConfig } from "../lib/nginx.js";
 import { createPM2Adapter } from "../lib/pm2.js";
@@ -33,6 +38,24 @@ function printAccessInfo(config: DeployConfig): void {
   if (config.port) {
     info(`Reachable directly at http://${config.server}:${config.port}`);
   }
+}
+
+/** Routes proxy.host from the edge to this app's server. Runs before the app's
+ * own nginx step, since first-time cert issuance needs ACME challenges to
+ * already flow edge → upstream. */
+async function configureEdge(config: DeployConfig): Promise<void> {
+  const edge = config.proxy?.edge;
+  if (!config.proxy || !edge) return;
+
+  info(
+    `  Routing ${config.proxy.host} from edge ${edge.server} to ${edge.upstream}...`,
+  );
+  await deployEdgeRoute(
+    toEdgeSSHTarget(edge),
+    config.proxy.host,
+    edge.upstream,
+    Boolean(config.proxy.ssl),
+  );
 }
 
 export function registerDeployCommand(program: Command): void {
@@ -96,6 +119,7 @@ export function registerDeployCommand(program: Command): void {
           target,
           `${app.dir}/${app.staticDir}`,
         );
+        await configureEdge(config);
         info(`  Configuring nginx to serve ${root} for ${config.proxy.host}...`);
         await deployStaticProxyConfig(
           target,
@@ -120,6 +144,7 @@ export function registerDeployCommand(program: Command): void {
           return;
         }
 
+        await configureEdge(config);
         info(`  Configuring nginx proxy for ${config.proxy.host}...`);
         await deployProxyConfig(
           target,

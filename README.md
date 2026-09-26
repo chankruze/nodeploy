@@ -132,6 +132,8 @@ ssh:
 #   host: inventory-api.internal
 #   ssl:                                      # optional — HTTPS via a Let's Encrypt cert
 #     email: you@example.com                  # (or just `ssl: true` to skip the email)
+#   edge:                                     # optional — see "Behind an edge proxy"
+#     server: 192.168.0.8
 ```
 
 `service`, `repo`, `server`, and `ssh.user` are required. `port` is required when `proxy` is set on a Node process app (`nestjs`/`nextjs`/`remix`/`express`/`generic`). Static apps (`vite`/`cra`) don't use `port` at all — they're served straight from disk by nginx — but still need `proxy.host` set, since that's the only way to reach a static app (there's no PM2 process, so there's no `<ip>:<port>` fallback for them).
@@ -160,6 +162,43 @@ With `proxy.ssl` set, each app gets its own [Let's Encrypt](https://letsencrypt.
 On the first deploy, nodeploy writes an HTTP-only config that serves the challenge from `/var/www/certbot`, runs `certbot certonly --webroot`, then switches to the HTTPS config — port 80 then only answers challenges and 301-redirects everything else to `https://`. Later deploys see the existing cert in `/etc/letsencrypt/live/<host>/` and skip straight to the HTTPS config. certbot never edits the nginx config (we don't use `certbot --nginx`), so redeploying can't clobber it. Renewal is handled by the systemd timer the `certbot` package installs; the certificate is registered with a `systemctl reload nginx` deploy hook so nginx picks up renewed certs. `nodeploy doctor` reports how many days each cert has left and fails if it's within 14 days of expiry (renewal normally happens at 30).
 
 The app itself sees plain HTTP from nginx, with `X-Forwarded-Proto: https` set — frameworks that generate absolute URLs or set `Secure` cookies need to trust it (e.g. `app.set("trust proxy", 1)` in Express). HSTS isn't enabled, so turning `ssl` back off doesn't leave browsers stuck refusing plain HTTP; add it in your app if you want it.
+
+### Behind an edge proxy (one public IP, many servers)
+
+A common LAN/office setup: the router forwards public ports 80/443 to **one** box (the "edge"), but apps run on several servers behind it, under several domains:
+
+```
+                                ┌─> 192.168.0.12  bob.geekofia.cloud, alice.geekofia.cloud
+internet ─> router ─> edge ─────┼─> 192.168.0.16  shop.brothersequipment.in
+            80/443   (.0.8)     └─> ...
+```
+
+Set `proxy.edge` on each app to have nodeploy configure the edge for it too:
+
+```yaml
+server: 192.168.0.12
+proxy:
+  host: bob.geekofia.cloud
+  ssl: { email: you@geekofia.cloud }
+  edge:
+    server: 192.168.0.8
+    # ssh: { user: root, keys: [~/.ssh/id_ed25519] }  # defaults to the app's ssh block
+    # upstream: 192.168.0.12                           # how the edge reaches `server`; defaults to `server`
+```
+
+The edge never holds certificates or runs apps — it just routes by hostname:
+
+- **Port 80:** a normal nginx server block per host (`sites-available/edge.<host>.conf`) forwarding to the upstream's nginx. This carries ACME challenges too, so each upstream obtains and renews its own certificate exactly as it would with a public IP of its own.
+- **Port 443:** TLS SNI passthrough via nginx's `stream` module — the edge reads the hostname from the TLS handshake and forwards the still-encrypted connection to `<upstream>:443`, per a one-line route file per host in `/etc/nginx/stream.d/nodeploy-routes/<host>.conf`.
+
+`nodeploy setup` prepares the edge once (installing nginx and, for `ssl` apps, `libnginx-mod-stream`, adding a top-level `stream {}` include to `nginx.conf`, and writing the SNI router to `/etc/nginx/stream.d/nodeploy.conf`); it's shared by every app routed through that edge, and safe to re-run from any of them. `nodeploy deploy` then writes (or updates) just this app's two route files before configuring the app itself. Since every per-app file is keyed by hostname, apps deployed from different repos never touch each other's files, and moving an app to another server is just changing `server` and redeploying. Every edge change is validated with `nginx -t` before reloading, and rolled back if it fails, so one bad app config can't break the shared edge for the others. `nodeploy doctor` checks the edge has this app's routes and can reach the upstream.
+
+Things to know:
+
+- **The SNI router owns port 443 on the edge.** `setup` refuses (naming the files) if something else already listens on 443 there. If the edge needs to serve HTTPS sites of its own, have them listen on `127.0.0.1:8443` — hostnames with no route are sent there.
+- **Client IPs:** over HTTPS, upstream apps see the edge's IP as the client (passthrough can't add `X-Forwarded-For` without decrypting). Over HTTP, the real IP is in `X-Forwarded-For`.
+- **Apps running on the edge box itself** don't use `edge` — nodeploy rejects `edge.server` equal to `server`. (HTTPS for those alongside the SNI router isn't supported yet.)
+- Nothing is removed automatically when an app goes away; delete its `edge.<host>.conf` (both `sites-available/` and `sites-enabled/`) and route file on the edge, then `sudo systemctl reload nginx`.
 
 ### Overriding the detected start script
 
@@ -256,7 +295,7 @@ Run once per app per server, before the first deploy (safe to re-run — every s
 3. Installs [nvm](https://github.com/nvm-sh/nvm) (if needed) and Node.js via `nvm install <node_version>` (default `22`) if `node` isn't already on the server's `PATH`. This installs into the SSH user's home directory — **no sudo required**. Runs regardless of `runtime`, since PM2 itself (the step below) is a Node package.
 4. Installs PM2 globally via `npm install -g pm2` if missing (also no sudo — nvm's npm installs into the nvm-managed Node's own directory), then tries to register it with `pm2 startup systemd` so PM2-managed apps survive a server reboot. **The `pm2 startup` step requires passwordless sudo**; if unavailable, warns and continues — the app still runs, it just won't come back automatically after a reboot until you fix sudo access and re-run `setup`.
 5. If `runtime: python` is set, installs `python3`/`python3-venv`/`python3-pip` via `apt` if the venv module isn't already importable. **Requires passwordless sudo**; warns and continues if unavailable.
-6. If `proxy` is configured in `nodeploy.yml`, installs and starts `nginx` via `apt` — plus `certbot` if `proxy.ssl` is set. **Requires passwordless sudo**; warns and continues if unavailable.
+6. If `proxy` is configured in `nodeploy.yml`, installs and starts `nginx` via `apt` — plus `certbot` if `proxy.ssl` is set. With `proxy.edge`, also installs nginx on the edge and (for `ssl` apps) sets up its SNI router — see [Behind an edge proxy](#behind-an-edge-proxy-one-public-ip-many-servers). **Requires passwordless sudo**; warns and continues if unavailable.
 7. Creates `deploy_path` if it doesn't exist yet.
 
 This targets Ubuntu/Debian (`apt`, `systemd`) — tested against Ubuntu LTS. Other distros aren't supported by `setup` yet; install prerequisites manually and `nodeploy doctor`/`deploy` will still work.
@@ -270,7 +309,8 @@ Run every time you ship a change (after `setup` has run at least once):
 3. For `runtime: node`, reads the remote `package.json` to detect the app type and resolve install/build/start commands. For `runtime: python`, checks for `requirements.txt`/`pyproject.toml` to resolve the install step and detect `flask` vs plain `python`.
 4. Installs dependencies and runs the build step (if any) on the server. For Python, this creates `deploy_path/.venv` (always, even with nothing to install) and `pip install`s into it if a manifest was found.
 5. For static app types (`vite`/`cra`), points nginx directly at the build output directory instead of starting anything under PM2 — no `port` involved. For every other type, starts (or restarts, if already running) the app under PM2 as `service` — Node apps via `pm2 start npm -- run <script>`, Python apps via `pm2 start <entry> --interpreter <venv>/bin/python3` — (appending `start_args`, if set, and exporting `PORT`, if `port` is set on a Python app), then `pm2 save`s the process list so it's restored on reboot.
-6. If `proxy` is configured (process apps only — static apps always write their nginx config in step 5), writes an nginx server block proxying `proxy.host` to `port`, symlinks it into `sites-enabled`, and reloads nginx. With `proxy.ssl`, this (and step 5 for static apps) first issues a Let's Encrypt certificate if the host doesn't have one yet — see [HTTPS and one subdomain per app](#https-and-one-subdomain-per-app).
+6. With `proxy.edge`, writes this app's routes on the edge first (port-80 forward, plus the 443 SNI route for `ssl` apps), so ACME challenges already reach the app's server when its certificate is issued. This happens before step 5's nginx config for static apps too.
+7. If `proxy` is configured (process apps only — static apps always write their nginx config in step 5), writes an nginx server block proxying `proxy.host` to `port`, symlinks it into `sites-enabled`, and reloads nginx. With `proxy.ssl`, this (and step 5 for static apps) first issues a Let's Encrypt certificate if the host doesn't have one yet — see [HTTPS and one subdomain per app](#https-and-one-subdomain-per-app).
 
 ## Architecture
 
@@ -279,6 +319,7 @@ Run every time you ship a change (after `setup` has run at least once):
 - `src/lib/serverSetup.ts` — idempotent provisioning steps (git/nginx/certbot via apt, Node via nvm, PM2 via npm, PM2 boot startup, Python3/venv via apt, deploy path creation) used by `nodeploy setup`.
 - `src/lib/git.ts` — clones or fetches+resets the app's repo on the server over SSH.
 - `src/lib/nginx.ts` — generates an nginx server block (reverse-proxy for PM2 apps, or static-file `root` for `vite`/`cra`; HTTP-only, or an HTTP→HTTPS redirect plus a 443 block when `proxy.ssl` is set), issues Let's Encrypt certs via certbot's webroot challenge, and pipes the config to the server via SSH (`sites-available` → `sites-enabled` → `nginx -t` → reload).
+- `src/lib/edge.ts` ��� edge-proxy routing: builds the per-host port-80 forward and 443 SNI route files plus the shared SNI router, and applies changes to the edge transactionally (`nginx -t`, restoring every touched file on failure).
 - `src/lib/deployConfig.ts` — loads and validates `nodeploy.yml` (YAML via the `yaml` package), applying defaults for `branch`/`deploy_path`/`ssh.port`/`node_version`/`runtime`.
 - `src/lib/detector.ts` — pluggable, ordered rule list for Node app-type detection from a `package.json`, plus `resolveStaticDir` mapping static-output app types (`vite`/`cra`) to their build directory. Adding a new JS framework means adding a rule here.
 - `src/lib/pythonDetector.ts` — the Python equivalent: reads `requirements.txt`/`pyproject.toml` (if present) to detect `flask` vs plain `python`, and resolves the venv-creation + `pip install` command.

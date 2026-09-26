@@ -53,6 +53,12 @@ ssh:
 #   # (e.g. my-app.example.com) whose DNS points at this server, with port 80 open.
 #   ssl:
 #     email: you@example.com
+#   # If the router forwards public 80/443 to a different box (an "edge"),
+#   # nodeploy routes this host from there to this server.
+#   edge:
+#     server: 192.168.0.8
+#     # ssh: { user: root }                   # defaults to the ssh block above
+#     # upstream: 192.168.0.12                # how the edge reaches this server; defaults to server
 `;
 
 export function registerInitCommand(program: Command): void {

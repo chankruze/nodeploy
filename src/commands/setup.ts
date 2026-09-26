@@ -1,6 +1,11 @@
 import type { Command } from "commander";
 import { DEPLOY_CONFIG_FILENAME } from "../constants.js";
-import { loadDeployConfig, toSSHTarget } from "../lib/deployConfig.js";
+import {
+  loadDeployConfig,
+  toEdgeSSHTarget,
+  toSSHTarget,
+} from "../lib/deployConfig.js";
+import { bootstrapEdge } from "../lib/edge.js";
 import { ensureDeployKey, parseGitSSHHost } from "../lib/deployKey.js";
 import { fail, info, success, warn } from "../lib/logger.js";
 import {
@@ -8,6 +13,7 @@ import {
   ensureDeployPath,
   ensureGit,
   ensureNginx,
+  ensureNginxStreamModule,
   ensureNode,
   ensurePM2,
   ensurePM2Startup,
@@ -23,7 +29,7 @@ export function registerSetupCommand(program: Command): void {
   program
     .command("setup")
     .description(
-      "Provision the server for this app once: git, Node.js, PM2, Python (if runtime: python), nginx (if proxy is configured), certbot (if proxy.ssl is set), and a deploy key",
+      "Provision the server for this app once: git, Node.js, PM2, Python (if runtime: python), nginx (if proxy is configured), certbot (if proxy.ssl is set), the edge proxy (if proxy.edge is set), and a deploy key",
     )
     .action(async () => {
       const config = loadDeployConfig(process.cwd(), DEPLOY_CONFIG_FILENAME);
@@ -103,6 +109,37 @@ export function registerSetupCommand(program: Command): void {
             warn(
               `  Could not install certbot — requires passwordless sudo. \`proxy.ssl\` won't work until this is fixed. (${errorMessage(error)})`,
             );
+          }
+        }
+
+        const edge = config.proxy.edge;
+        if (edge) {
+          const edgeTarget = toEdgeSSHTarget(edge);
+          info(`  Checking edge proxy ${edge.server}...`);
+          if (!(await sshTest(edgeTarget))) {
+            warn(
+              `  Could not connect to edge ${edge.ssh.user}@${edge.server} — ${config.proxy.host} won't be reachable through it until this is fixed.`,
+            );
+          } else {
+            try {
+              (await ensureNginx(edgeTarget))
+                ? success("  nginx installed on edge")
+                : success("  nginx already present on edge");
+
+              // Plain-HTTP forwarding needs nothing beyond nginx; the SNI
+              // router on 443 is only set up once an app actually needs it.
+              if (config.proxy.ssl) {
+                if (await ensureNginxStreamModule(edgeTarget)) {
+                  success("  nginx stream module installed on edge");
+                }
+                await bootstrapEdge(edgeTarget);
+                success("  Edge set up to route HTTPS by hostname (SNI)");
+              }
+            } catch (error) {
+              warn(
+                `  Could not set up edge ${edge.server}. (${errorMessage(error)})`,
+              );
+            }
           }
         }
       }
