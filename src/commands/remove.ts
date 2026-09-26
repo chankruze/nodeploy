@@ -6,6 +6,7 @@ import {
   toSSHTarget,
 } from "../lib/deployConfig.js";
 import { removeCloudflareCredentials } from "../lib/cloudflare.js";
+import { clearDeployState } from "../lib/deployState.js";
 import { removeEdgeRoute } from "../lib/edge.js";
 import { fail, info, success, warn } from "../lib/logger.js";
 import { createPM2Adapter } from "../lib/pm2.js";
@@ -84,6 +85,13 @@ export function registerRemoveCommand(program: Command): void {
           failed = true;
         }
       };
+
+      // First, so an interrupted remove can't leave a record that makes the
+      // next `deploy` think the app is already up to date.
+      await step("Clearing deploy record", async () => {
+        await clearDeployState(target, config.deployPath);
+        return "Next `nodeploy deploy` will deploy in full";
+      });
 
       // Public traffic first, so nothing reaches a half-removed app.
       if (config.proxy && edge) {

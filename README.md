@@ -356,12 +356,24 @@ This targets Ubuntu/Debian (`apt`, `systemd`) — tested against Ubuntu LTS. Oth
 Run every time you ship a change (after `setup` has run at least once):
 
 1. Checks the SSH connection to `server`.
-2. Clones the repo into `deploy_path` if it isn't there yet, otherwise fetches and hard-resets to `origin/<branch>`.
-3. For `runtime: node`, reads the remote `package.json` to detect the app type and resolve install/build/start commands. For `runtime: python`, checks for `requirements.txt`/`pyproject.toml` to resolve the install step and detect `flask` vs plain `python`.
-4. Installs dependencies and runs the build step (if any) on the server. For Python, this creates `deploy_path/.venv` (always, even with nothing to install) and `pip install`s into it if a manifest was found.
-5. For static app types (`vite`/`cra`), points nginx directly at the build output directory instead of starting anything under PM2 — no `port` involved. For every other type, starts (or restarts, if already running) the app under PM2 as `service` — Node apps via `pm2 start npm -- run <script>`, Python apps via `pm2 start <entry> --interpreter <venv>/bin/python3` — (appending `start_args`, if set, and exporting `PORT`, if `port` is set on a Python app), then `pm2 save`s the process list so it's restored on reboot.
-6. With `proxy.edge`, writes this app's routes on the edge first (port-80 forward, plus the 443 SNI route for `ssl` apps), so ACME challenges already reach the app's server when its certificate is issued. This happens before step 5's nginx config for static apps too.
-7. If `proxy` is configured (process apps only — static apps always write their nginx config in step 5), writes an nginx server block proxying `proxy.host` to `port`, symlinks it into `sites-enabled`, and reloads nginx. With `proxy.ssl`, this (and step 5 for static apps) first issues a Let's Encrypt certificate if the host doesn't have one yet — see [HTTPS and one subdomain per app](#https-and-one-subdomain-per-app).
+2. **Skips the deploy if nothing would change** (unless `--force`): see [Skipping unchanged deploys](#skipping-unchanged-deploys).
+3. Clones the repo into `deploy_path` if it isn't there yet, otherwise fetches and hard-resets to `origin/<branch>`.
+4. For `runtime: node`, reads the remote `package.json` to detect the app type and resolve install/build/start commands. For `runtime: python`, checks for `requirements.txt`/`pyproject.toml` to resolve the install step and detect `flask` vs plain `python`.
+5. Installs dependencies and runs the build step (if any) on the server. For Python, this creates `deploy_path/.venv` (always, even with nothing to install) and `pip install`s into it if a manifest was found.
+6. For static app types (`vite`/`cra`), points nginx directly at the build output directory instead of starting anything under PM2 — no `port` involved. For every other type, starts (or restarts, if already running) the app under PM2 as `service` — Node apps via `pm2 start npm -- run <script>`, Python apps via `pm2 start <entry> --interpreter <venv>/bin/python3` — (appending `start_args`, if set, and exporting `PORT`, if `port` is set on a Python app), then `pm2 save`s the process list so it's restored on reboot.
+7. With `proxy.edge`, writes this app's routes on the edge first (port-80 forward, plus the 443 SNI route for `ssl` apps), so ACME challenges already reach the app's server when its certificate is issued. This happens before step 6's nginx config for static apps too.
+8. If `proxy` is configured (process apps only — static apps always write their nginx config in step 6), writes an nginx server block proxying `proxy.host` to `port`, symlinks it into `sites-enabled`, and reloads nginx. With `proxy.ssl`, this (and step 6 for static apps) first issues a Let's Encrypt certificate if the host doesn't have one yet — see [HTTPS and one subdomain per app](#https-and-one-subdomain-per-app).
+
+### Skipping unchanged deploys
+
+After every successful deploy, nodeploy records on the server what it deployed: the commit, plus a fingerprint of the effective `nodeploy.yml` config and the nodeploy version (in `<deploy_path>/.git/nodeploy-deployed`, where `git reset`/`git clean` never touch it and `git status` doesn't show it). The next `nodeploy deploy` first asks the server for the branch's latest commit (`git ls-remote`, with the app's deploy key, fetching nothing), and skips the whole deploy — no fetch, install, build, restart, or nginx reload — only if **all** of these hold:
+
+- the branch's latest commit is the one last deployed,
+- `nodeploy.yml` hasn't changed (it lives on your machine, not on the server, so changing `ssl`, `edge`, `port`, `start_script`, etc. with the same commit still redeploys),
+- nodeploy's version hasn't changed (a newer nodeploy may write different nginx config for the same app),
+- the app is actually live: its PM2 process is `online`, or for static apps its nginx site is enabled.
+
+Anything else deploys as usual, and the output says why (e.g. `Deploying: new commit 1a2b3c4 (deployed: 9f8e7d6)`). The record is only written once a deploy fully succeeds, so a failed deploy is never skipped next time, and `nodeploy remove` clears it. `nodeploy deploy --force` (or `-f`) always deploys — e.g. after changing something on the server by hand, or to re-run `npm install` for the same commit.
 
 ## Architecture
 

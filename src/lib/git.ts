@@ -10,16 +10,20 @@ export interface EnsureRepoOptions {
   service: string;
 }
 
+/** Shell prefix making git on the server authenticate with this app's own
+ * deploy key, for SSH repo URLs (empty for https://, which needs none). */
+export function gitSshEnv(repo: string, service: string): string {
+  return parseGitSSHHost(repo)
+    ? `export GIT_SSH_COMMAND='ssh -i "${deployKeyPath(service)}" -o IdentitiesOnly=yes'; `
+    : "";
+}
+
 export async function ensureRepo(
   target: SSHTarget,
   opts: EnsureRepoOptions,
 ): Promise<void> {
   const { repo, branch, deployPath, service } = opts;
-
-  const sshHost = parseGitSSHHost(repo);
-  const exportGitSsh = sshHost
-    ? `export GIT_SSH_COMMAND='ssh -i "${deployKeyPath(service)}" -o IdentitiesOnly=yes'; `
-    : "";
+  const exportGitSsh = gitSshEnv(repo, service);
 
   const remoteCommand = [
     exportGitSsh + `if [ -d "${deployPath}/.git" ]; then`,
@@ -30,4 +34,23 @@ export async function ensureRepo(
   ].join(" ");
 
   await sshExec(target, remoteCommand, { stdio: "inherit" });
+}
+
+/** The commit `branch` currently points to on the remote, asked from the
+ * server (with its deploy key) without fetching anything. Null if the
+ * server can't reach the remote or the branch doesn't exist. */
+export async function remoteBranchHead(
+  target: SSHTarget,
+  opts: Omit<EnsureRepoOptions, "deployPath">,
+): Promise<string | null> {
+  try {
+    const { stdout } = await sshExec(
+      target,
+      `${gitSshEnv(opts.repo, opts.service)}git ls-remote "${opts.repo}" "refs/heads/${opts.branch}"`,
+    );
+    const commit = stdout.trim().split(/\s+/)[0] ?? "";
+    return /^[0-9a-f]{40}$/.test(commit) ? commit : null;
+  } catch {
+    return null;
+  }
 }

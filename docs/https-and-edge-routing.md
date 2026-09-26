@@ -237,6 +237,8 @@ flowchart TD
 
 ### Every deploy
 
+(A deploy that would change nothing is skipped before any of this: same commit, same `nodeploy.yml`, same nodeploy version, and the app still live. See "Skipping unchanged deploys" in the README; `--force` overrides it.)
+
 The edge step comes in two halves around the app's own nginx step, for two reasons. The port-80 forward must exist before certificate issuance, so challenges can reach the app server. The HTTPS route must only point at a listener that already exists.
 
 ```mermaid
