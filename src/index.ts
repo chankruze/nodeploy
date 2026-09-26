@@ -1,4 +1,7 @@
 import { Command } from "commander";
+// Bundled into dist/cli.js at build time (only this field), so --version
+// can't drift from package.json again.
+import { version } from "../package.json";
 import { registerInitCommand } from "./commands/init.js";
 import { registerSetupCommand } from "./commands/setup.js";
 import { registerDeployCommand } from "./commands/deploy.js";
@@ -16,7 +19,7 @@ export function createProgram(): Command {
   program
     .name("nodeploy")
     .description("A lightweight, self-hosted deployment CLI for Node.js apps")
-    .version("0.1.0");
+    .version(version);
 
   registerInitCommand(program);
   registerSetupCommand(program);
