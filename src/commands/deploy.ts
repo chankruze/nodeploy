@@ -12,6 +12,14 @@ import type { DeployConfig } from "../types.js";
 
 /** Prints how to reach the app right now, before any local DNS/hosts setup. */
 function printAccessInfo(config: DeployConfig): void {
+  if (config.proxy?.ssl) {
+    info(
+      `Verify it's up (bypassing local DNS): curl --resolve ${config.proxy.host}:443:${config.server} https://${config.proxy.host}/`,
+    );
+    info(`Live at https://${config.proxy.host}`);
+    return;
+  }
+
   if (config.proxy) {
     info(
       `Verify it's up right now (no DNS/hosts changes needed): curl -H "Host: ${config.proxy.host}" http://${config.server}/`,
@@ -94,6 +102,7 @@ export function registerDeployCommand(program: Command): void {
           config.service,
           config.proxy.host,
           root,
+          config.proxy.ssl,
         );
 
         success(`${config.service} deployed`);
@@ -117,6 +126,7 @@ export function registerDeployCommand(program: Command): void {
           config.service,
           config.proxy.host,
           config.port,
+          config.proxy.ssl,
         );
       }
 

@@ -132,6 +132,26 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
       throw new Error("nodeploy.yml: \"proxy.host\" must be a non-empty string");
     }
     proxy = { host: proxyRaw.host };
+
+    // `ssl: true` is shorthand for `ssl: {}` (no registration email).
+    if (proxyRaw.ssl === true) {
+      proxy.ssl = {};
+    } else if (typeof proxyRaw.ssl === "object" && proxyRaw.ssl !== null) {
+      const sslRaw = proxyRaw.ssl as Record<string, unknown>;
+      if (
+        sslRaw.email !== undefined &&
+        (typeof sslRaw.email !== "string" || sslRaw.email.length === 0)
+      ) {
+        throw new Error(
+          "nodeploy.yml: \"proxy.ssl.email\" must be a non-empty string",
+        );
+      }
+      proxy.ssl = { email: sslRaw.email as string | undefined };
+    } else if (proxyRaw.ssl !== undefined && proxyRaw.ssl !== false) {
+      throw new Error(
+        "nodeploy.yml: \"proxy.ssl\" must be true, false, or an object (e.g. ssl: { email: you@example.com })",
+      );
+    }
   }
 
   const config: DeployConfig = {

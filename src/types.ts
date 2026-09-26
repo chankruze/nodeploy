@@ -30,8 +30,17 @@ export interface SSHConfig {
   port?: number;
 }
 
+/** HTTPS via a per-app Let's Encrypt certificate, issued with certbot's
+ * webroot (HTTP-01) challenge — `proxy.host` must resolve publicly to the
+ * server, with port 80 reachable from the internet. */
+export interface SSLConfig {
+  /** Let's Encrypt account email for expiry notices. Optional. */
+  email?: string;
+}
+
 export interface ProxyConfig {
   host: string;
+  ssl?: SSLConfig;
 }
 
 /** Shape of a per-app `nodeploy.yml` file. */

@@ -49,6 +49,10 @@ ssh:
 # port: 3000
 # proxy:
 #   host: my-app.internal
+#   # HTTPS via a per-app Let's Encrypt cert. host must be a real public domain
+#   # (e.g. my-app.example.com) whose DNS points at this server, with port 80 open.
+#   ssl:
+#     email: you@example.com
 `;
 
 export function registerInitCommand(program: Command): void {

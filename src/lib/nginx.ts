@@ -1,16 +1,15 @@
 import { sshExec } from "./ssh.js";
-import type { SSHTarget } from "../types.js";
+import type { SSHTarget, SSLConfig } from "../types.js";
 
-export function buildServerBlock(
-  service: string,
-  host: string,
-  port: number,
-): string {
-  return `server {
-    listen 80;
-    server_name ${host};
+/** Where certbot drops HTTP-01 challenge files, served by every port-80 block. */
+export const ACME_WEBROOT = "/var/www/certbot";
 
-    location / {
+export function certificateDir(host: string): string {
+  return `/etc/letsencrypt/live/${host}`;
+}
+
+function proxyBody(port: number): string {
+  return `    location / {
         proxy_pass http://127.0.0.1:${port};
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -19,24 +18,81 @@ export function buildServerBlock(
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-`;
+    }`;
 }
 
-export function buildStaticServerBlock(host: string, root: string): string {
-  return `server {
-    listen 80;
-    server_name ${host};
-
-    root ${root};
+function staticBody(root: string): string {
+  return `    root ${root};
     index index.html;
 
     location / {
         try_files $uri $uri/ /index.html;
-    }
+    }`;
+}
+
+// Kept in every port-80 block, not just SSL ones: the first-time issuance
+// flow serves the challenge from the plain HTTP block before any cert exists,
+// and renewals keep hitting it on port 80 after the HTTPS block is in place.
+const ACME_LOCATION = `    location /.well-known/acme-challenge/ {
+        root ${ACME_WEBROOT};
+    }`;
+
+/** Wraps a site body in nginx server block(s). With `ssl`, port 80 only
+ * answers ACME challenges and redirects to HTTPS, and the body moves to 443. */
+function buildSite(host: string, body: string, ssl: boolean): string {
+  if (!ssl) {
+    return `server {
+    listen 80;
+    server_name ${host};
+
+${ACME_LOCATION}
+
+${body}
 }
 `;
+  }
+
+  const certDir = certificateDir(host);
+  // `listen ... http2` rather than the newer `http2 on;` directive, which
+  // nginx < 1.25.1 (e.g. Ubuntu 22.04's 1.18) rejects outright; newer nginx
+  // only logs a deprecation warning for this form.
+  return `server {
+    listen 80;
+    server_name ${host};
+
+${ACME_LOCATION}
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name ${host};
+
+    ssl_certificate ${certDir}/fullchain.pem;
+    ssl_certificate_key ${certDir}/privkey.pem;
+
+${body}
+}
+`;
+}
+
+export function buildServerBlock(
+  host: string,
+  port: number,
+  ssl = false,
+): string {
+  return buildSite(host, proxyBody(port), ssl);
+}
+
+export function buildStaticServerBlock(
+  host: string,
+  root: string,
+  ssl = false,
+): string {
+  return buildSite(host, staticBody(root), ssl);
 }
 
 async function writeAndReload(
@@ -57,13 +113,91 @@ async function writeAndReload(
   await sshExec(target, remoteCommand, { input: block });
 }
 
+/** /etc/letsencrypt/live is root-only, so this needs sudo even to check. */
+export async function hasCertificate(
+  target: SSHTarget,
+  host: string,
+): Promise<boolean> {
+  try {
+    await sshExec(
+      target,
+      `sudo test -f "${certificateDir(host)}/fullchain.pem"`,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function issueCertificate(
+  target: SSHTarget,
+  host: string,
+  ssl: SSLConfig,
+): Promise<void> {
+  const account = ssl.email
+    ? `--email "${ssl.email}"`
+    : "--register-unsafely-without-email";
+
+  // --cert-name pins the lineage dir to the host, so certificateDir() stays
+  // correct instead of certbot picking e.g. <host>-0001. --deploy-hook is
+  // saved into the cert's renewal config, so certbot's systemd timer reloads
+  // nginx after every future renewal too, not just this first issuance.
+  const remoteCommand = [
+    `sudo mkdir -p "${ACME_WEBROOT}"`,
+    [
+      "sudo certbot certonly --webroot",
+      `-w "${ACME_WEBROOT}"`,
+      `-d "${host}"`,
+      `--cert-name "${host}"`,
+      account,
+      "--agree-tos --non-interactive",
+      `--deploy-hook "systemctl reload nginx"`,
+    ].join(" "),
+  ].join(" && ");
+
+  try {
+    await sshExec(target, remoteCommand, { stdio: "inherit" });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `certbot could not issue a certificate for ${host} — make sure its DNS record points at this server and port 80 is reachable from the internet (the site is still being served over plain HTTP). (${reason})`,
+    );
+  }
+}
+
+/** Writes the site config, obtaining a certificate first if SSL is on and
+ * none exists yet. A 443 block pointing at a missing cert fails `nginx -t`,
+ * so first-time issuance goes through an HTTP-only config that can answer
+ * the ACME challenge. certbot only ever writes to /etc/letsencrypt — never
+ * to our config — so redeploying can't clobber anything it set up. */
+async function deploySite(
+  target: SSHTarget,
+  service: string,
+  host: string,
+  build: (ssl: boolean) => string,
+  ssl?: SSLConfig,
+): Promise<void> {
+  if (ssl && !(await hasCertificate(target, host))) {
+    await writeAndReload(target, service, build(false));
+    await issueCertificate(target, host, ssl);
+  }
+  await writeAndReload(target, service, build(Boolean(ssl)));
+}
+
 export async function deployProxyConfig(
   target: SSHTarget,
   service: string,
   host: string,
   port: number,
+  ssl?: SSLConfig,
 ): Promise<void> {
-  await writeAndReload(target, service, buildServerBlock(service, host, port));
+  await deploySite(
+    target,
+    service,
+    host,
+    (withSSL) => buildServerBlock(host, port, withSSL),
+    ssl,
+  );
 }
 
 export async function deployStaticProxyConfig(
@@ -71,6 +205,7 @@ export async function deployStaticProxyConfig(
   service: string,
   host: string,
   root: string,
+  ssl?: SSLConfig,
 ): Promise<void> {
   // nginx's worker runs as www-data, not the SSH user — if deploy_path defaults
   // to ~/apps/<service> under a root-owned $HOME (mode 700), www-data can't
@@ -78,7 +213,13 @@ export async function deployStaticProxyConfig(
   // rewrite/redirection cycle (or a plain 500) rather than a clear permission
   // error. Grant traversal only, not read/listing, on $HOME itself.
   await sshExec(target, "chmod o+x $HOME");
-  await writeAndReload(target, service, buildStaticServerBlock(host, root));
+  await deploySite(
+    target,
+    service,
+    host,
+    (withSSL) => buildStaticServerBlock(host, root, withSSL),
+    ssl,
+  );
 }
 
 export async function isStaticSiteEnabled(

@@ -92,6 +92,18 @@ export async function ensureNginx(target: SSHTarget): Promise<boolean> {
   return true;
 }
 
+/** Returns true if certbot had to be installed. Requires passwordless sudo.
+ * Debian/Ubuntu's package also installs the systemd timer that renews certs. */
+export async function ensureCertbot(target: SSHTarget): Promise<boolean> {
+  if (await commandExists(target, "certbot")) return false;
+  await sshExec(
+    target,
+    "sudo apt-get update && sudo apt-get install -y certbot",
+    { stdio: "inherit" },
+  );
+  return true;
+}
+
 export async function ensureDeployPath(
   target: SSHTarget,
   deployPath: string,

@@ -4,6 +4,7 @@ import { loadDeployConfig, toSSHTarget } from "../lib/deployConfig.js";
 import { ensureDeployKey, parseGitSSHHost } from "../lib/deployKey.js";
 import { fail, info, success, warn } from "../lib/logger.js";
 import {
+  ensureCertbot,
   ensureDeployPath,
   ensureGit,
   ensureNginx,
@@ -22,7 +23,7 @@ export function registerSetupCommand(program: Command): void {
   program
     .command("setup")
     .description(
-      "Provision the server for this app once: git, Node.js, PM2, Python (if runtime: python), nginx (if proxy is configured), and a deploy key",
+      "Provision the server for this app once: git, Node.js, PM2, Python (if runtime: python), nginx (if proxy is configured), certbot (if proxy.ssl is set), and a deploy key",
     )
     .action(async () => {
       const config = loadDeployConfig(process.cwd(), DEPLOY_CONFIG_FILENAME);
@@ -90,6 +91,19 @@ export function registerSetupCommand(program: Command): void {
           warn(
             `  Could not install nginx — requires passwordless sudo. \`proxy\` won't work until this is fixed. (${errorMessage(error)})`,
           );
+        }
+
+        if (config.proxy.ssl) {
+          info("  Checking certbot...");
+          try {
+            (await ensureCertbot(target))
+              ? success("  certbot installed")
+              : success("  certbot already present");
+          } catch (error) {
+            warn(
+              `  Could not install certbot — requires passwordless sudo. \`proxy.ssl\` won't work until this is fixed. (${errorMessage(error)})`,
+            );
+          }
         }
       }
 

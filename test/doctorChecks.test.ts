@@ -8,6 +8,7 @@ vi.mock("execa", () => ({ execa }));
 const {
   checkDeployPathWritable,
   checkMemory,
+  checkCertificate,
   checkNginx,
   checkNode,
   checkPM2,
@@ -94,6 +95,53 @@ describe("doctorChecks", () => {
     execa.mockRejectedValueOnce(new Error("sudo: a password is required"));
     const result = await checkPasswordlessSudo(target);
     expect(result.ok).toBe(false);
+  });
+
+  it("checkCertificate reports days left on a healthy cert", async () => {
+    execa.mockResolvedValueOnce({ stdout: "notAfter=Dec 25 12:00:00 2026 GMT\n" });
+    const result = await checkCertificate(
+      target,
+      "api.example.com",
+      new Date("2026-09-26T12:00:00Z"),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain("90 more day(s)");
+  });
+
+  it("checkCertificate fails hard when the cert is inside the renewal-failure window", async () => {
+    execa.mockResolvedValueOnce({ stdout: "notAfter=Oct  1 12:00:00 2026 GMT" });
+    const result = await checkCertificate(
+      target,
+      "api.example.com",
+      new Date("2026-09-26T12:00:00Z"),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.optional).toBeUndefined();
+    expect(result.message).toContain("expires in 5 day(s)");
+  });
+
+  it("checkCertificate is optional when no cert has been issued yet", async () => {
+    execa.mockRejectedValueOnce(new Error("No such file"));
+    const result = await checkCertificate(target, "api.example.com");
+    expect(result.ok).toBe(false);
+    expect(result.optional).toBe(true);
+  });
+
+  it("runAllChecks includes certbot and certificate checks only when proxy.ssl is set", async () => {
+    execa.mockResolvedValue({ stdout: "notAfter=Dec 25 12:00:00 2099 GMT" });
+    const plain = await runAllChecks(
+      makeConfig({ proxy: { host: "api.example.com" }, port: 3000 }),
+      target,
+    );
+    expect(plain.map((r) => r.name)).not.toContain("TLS certificate");
+
+    const withSSL = await runAllChecks(
+      makeConfig({ proxy: { host: "api.example.com", ssl: {} }, port: 3000 }),
+      target,
+    );
+    const names = withSSL.map((r) => r.name);
+    expect(names).toContain("certbot");
+    expect(names).toContain("TLS certificate");
   });
 
   it("runAllChecks short-circuits to just the connection check when SSH fails", async () => {

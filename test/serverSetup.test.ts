@@ -6,6 +6,7 @@ const { execa } = vi.hoisted(() => ({ execa: vi.fn() }));
 vi.mock("execa", () => ({ execa }));
 
 const {
+  ensureCertbot,
   ensureDeployPath,
   ensureGit,
   ensureNginx,
@@ -139,6 +140,22 @@ describe("serverSetup", () => {
     const [, args] = execa.mock.calls[1];
     expect(args[args.length - 1]).toContain("apt-get install -y nginx");
     expect(args[args.length - 1]).toContain("systemctl enable --now nginx");
+  });
+
+  it("ensureCertbot skips install when certbot is already present", async () => {
+    execa.mockResolvedValueOnce({});
+    const installed = await ensureCertbot(target);
+    expect(installed).toBe(false);
+    expect(execa).toHaveBeenCalledTimes(1);
+  });
+
+  it("ensureCertbot installs certbot via apt when missing", async () => {
+    execa.mockRejectedValueOnce(new Error("not found"));
+    execa.mockResolvedValueOnce({});
+    const installed = await ensureCertbot(target);
+    expect(installed).toBe(true);
+    const [, args] = execa.mock.calls[1];
+    expect(args[args.length - 1]).toContain("apt-get install -y certbot");
   });
 
   it("ensureDeployPath makes the directory on the remote", async () => {

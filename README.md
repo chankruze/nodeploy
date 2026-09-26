@@ -130,11 +130,36 @@ ssh:
 # port: 3001
 # proxy:
 #   host: inventory-api.internal
+#   ssl:                                      # optional — HTTPS via a Let's Encrypt cert
+#     email: you@example.com                  # (or just `ssl: true` to skip the email)
 ```
 
 `service`, `repo`, `server`, and `ssh.user` are required. `port` is required when `proxy` is set on a Node process app (`nestjs`/`nextjs`/`remix`/`express`/`generic`). Static apps (`vite`/`cra`) don't use `port` at all — they're served straight from disk by nginx — but still need `proxy.host` set, since that's the only way to reach a static app (there's no PM2 process, so there's no `<ip>:<port>` fallback for them).
 
 `proxy.host` can be anything — it's just the nginx `server_name`, resolved via a manual `/etc/hosts` entry (see below) or real DNS if the server has a public IP and domain. A natural pattern when running several apps on one server is `<app-name>.<hostname>`, e.g. `my-app.beepl-office-server-2`, or a shorter fake-TLD like `my-app.internal`/`my-app.lan`. **Avoid `.local`** — it's reserved for mDNS/Bonjour (RFC 6762), and macOS/Linux (avahi) will try multicast DNS resolution for that suffix first, which can make lookups slow or flaky, or ignore your `/etc/hosts` entry depending on `nsswitch.conf` ordering.
+
+### HTTPS and one subdomain per app
+
+Every app gets its own nginx server block keyed on `proxy.host`, so several apps on one server can each have their own subdomain — nginx picks the block by the request's `Host` header (and, over HTTPS, by SNI):
+
+```yaml
+# app1/nodeploy.yml                 # app2/nodeploy.yml
+port: 3001                          port: 3002
+proxy:                              proxy:
+  host: app1.example.com              host: app2.example.com
+  ssl:                                ssl:
+    email: you@example.com              email: you@example.com
+```
+
+With `proxy.ssl` set, each app gets its own [Let's Encrypt](https://letsencrypt.org/) certificate via certbot's webroot (HTTP-01) challenge. Requirements:
+
+- `proxy.host` must be a real, publicly resolvable domain pointing at `server` — either an A record per app, or one wildcard `*.example.com` record covering all of them. Fake TLDs like `.internal`/`.lan` or `/etc/hosts`-only names can't get a certificate.
+- Port 80 must be reachable from the internet (Let's Encrypt validates over it, including on every renewal), as well as 443.
+- `nodeploy setup` installs `certbot` (passwordless sudo required).
+
+On the first deploy, nodeploy writes an HTTP-only config that serves the challenge from `/var/www/certbot`, runs `certbot certonly --webroot`, then switches to the HTTPS config — port 80 then only answers challenges and 301-redirects everything else to `https://`. Later deploys see the existing cert in `/etc/letsencrypt/live/<host>/` and skip straight to the HTTPS config. certbot never edits the nginx config (we don't use `certbot --nginx`), so redeploying can't clobber it. Renewal is handled by the systemd timer the `certbot` package installs; the certificate is registered with a `systemctl reload nginx` deploy hook so nginx picks up renewed certs. `nodeploy doctor` reports how many days each cert has left and fails if it's within 14 days of expiry (renewal normally happens at 30).
+
+The app itself sees plain HTTP from nginx, with `X-Forwarded-Proto: https` set — frameworks that generate absolute URLs or set `Secure` cookies need to trust it (e.g. `app.set("trust proxy", 1)` in Express). HSTS isn't enabled, so turning `ssl` back off doesn't leave browsers stuck refusing plain HTTP; add it in your app if you want it.
 
 ### Overriding the detected start script
 
@@ -179,7 +204,8 @@ Same as with Node apps, apps bound to `127.0.0.1` work fine here since nginx and
 
 `nodeploy deploy` prints exactly how to reach the app, right after it finishes:
 
-- If `proxy` is set, it prints a `curl -H "Host: <proxy.host>" http://<server>/` command that works immediately — nginx routes on the `Host` header, not DNS, so this verifies the deploy without touching anything on your machine.
+- If `proxy.ssl` is set, it prints a `curl --resolve <host>:443:<server> https://<host>/` check and the `https://` URL — no hosts-file step, since SSL already requires real DNS.
+- If `proxy` is set without `ssl`, it prints a `curl -H "Host: <proxy.host>" http://<server>/` command that works immediately — nginx routes on the `Host` header, not DNS, so this verifies the deploy without touching anything on your machine.
 - It also prints the `/etc/hosts` line to add for normal browser access (see below) — do that once per machine that needs to reach the app via the hostname.
 - If there's no `proxy` (a plain PM2 app with `port` set), it prints the direct `http://<server-ip>:<port>` URL instead — no hosts/DNS setup needed at all in that case.
 
@@ -230,7 +256,7 @@ Run once per app per server, before the first deploy (safe to re-run — every s
 3. Installs [nvm](https://github.com/nvm-sh/nvm) (if needed) and Node.js via `nvm install <node_version>` (default `22`) if `node` isn't already on the server's `PATH`. This installs into the SSH user's home directory — **no sudo required**. Runs regardless of `runtime`, since PM2 itself (the step below) is a Node package.
 4. Installs PM2 globally via `npm install -g pm2` if missing (also no sudo — nvm's npm installs into the nvm-managed Node's own directory), then tries to register it with `pm2 startup systemd` so PM2-managed apps survive a server reboot. **The `pm2 startup` step requires passwordless sudo**; if unavailable, warns and continues — the app still runs, it just won't come back automatically after a reboot until you fix sudo access and re-run `setup`.
 5. If `runtime: python` is set, installs `python3`/`python3-venv`/`python3-pip` via `apt` if the venv module isn't already importable. **Requires passwordless sudo**; warns and continues if unavailable.
-6. If `proxy` is configured in `nodeploy.yml`, installs and starts `nginx` via `apt`. **Requires passwordless sudo**; warns and continues if unavailable.
+6. If `proxy` is configured in `nodeploy.yml`, installs and starts `nginx` via `apt` — plus `certbot` if `proxy.ssl` is set. **Requires passwordless sudo**; warns and continues if unavailable.
 7. Creates `deploy_path` if it doesn't exist yet.
 
 This targets Ubuntu/Debian (`apt`, `systemd`) — tested against Ubuntu LTS. Other distros aren't supported by `setup` yet; install prerequisites manually and `nodeploy doctor`/`deploy` will still work.
@@ -244,15 +270,15 @@ Run every time you ship a change (after `setup` has run at least once):
 3. For `runtime: node`, reads the remote `package.json` to detect the app type and resolve install/build/start commands. For `runtime: python`, checks for `requirements.txt`/`pyproject.toml` to resolve the install step and detect `flask` vs plain `python`.
 4. Installs dependencies and runs the build step (if any) on the server. For Python, this creates `deploy_path/.venv` (always, even with nothing to install) and `pip install`s into it if a manifest was found.
 5. For static app types (`vite`/`cra`), points nginx directly at the build output directory instead of starting anything under PM2 — no `port` involved. For every other type, starts (or restarts, if already running) the app under PM2 as `service` — Node apps via `pm2 start npm -- run <script>`, Python apps via `pm2 start <entry> --interpreter <venv>/bin/python3` — (appending `start_args`, if set, and exporting `PORT`, if `port` is set on a Python app), then `pm2 save`s the process list so it's restored on reboot.
-6. If `proxy` is configured (process apps only — static apps always write their nginx config in step 5), writes an nginx server block proxying `proxy.host` to `port`, symlinks it into `sites-enabled`, and reloads nginx.
+6. If `proxy` is configured (process apps only — static apps always write their nginx config in step 5), writes an nginx server block proxying `proxy.host` to `port`, symlinks it into `sites-enabled`, and reloads nginx. With `proxy.ssl`, this (and step 5 for static apps) first issues a Let's Encrypt certificate if the host doesn't have one yet — see [HTTPS and one subdomain per app](#https-and-one-subdomain-per-app).
 
 ## Architecture
 
 - `src/lib/ssh.ts` — the seam everything else is built on: shells out to the system `ssh` binary via `execa` to run a remote command or test connectivity.
 - `src/lib/remoteEnv.ts` — wraps remote commands to source nvm first, so `node`/`npm`/`pm2` resolve in a non-login SSH shell.
-- `src/lib/serverSetup.ts` — idempotent provisioning steps (git/nginx via apt, Node via nvm, PM2 via npm, PM2 boot startup, Python3/venv via apt, deploy path creation) used by `nodeploy setup`.
+- `src/lib/serverSetup.ts` — idempotent provisioning steps (git/nginx/certbot via apt, Node via nvm, PM2 via npm, PM2 boot startup, Python3/venv via apt, deploy path creation) used by `nodeploy setup`.
 - `src/lib/git.ts` — clones or fetches+resets the app's repo on the server over SSH.
-- `src/lib/nginx.ts` — generates an nginx server block (reverse-proxy for PM2 apps, or static-file `root` for `vite`/`cra`) and pipes it to the server via SSH (`sites-available` → `sites-enabled` → `nginx -t` → reload).
+- `src/lib/nginx.ts` — generates an nginx server block (reverse-proxy for PM2 apps, or static-file `root` for `vite`/`cra`; HTTP-only, or an HTTP→HTTPS redirect plus a 443 block when `proxy.ssl` is set), issues Let's Encrypt certs via certbot's webroot challenge, and pipes the config to the server via SSH (`sites-available` → `sites-enabled` → `nginx -t` → reload).
 - `src/lib/deployConfig.ts` — loads and validates `nodeploy.yml` (YAML via the `yaml` package), applying defaults for `branch`/`deploy_path`/`ssh.port`/`node_version`/`runtime`.
 - `src/lib/detector.ts` — pluggable, ordered rule list for Node app-type detection from a `package.json`, plus `resolveStaticDir` mapping static-output app types (`vite`/`cra`) to their build directory. Adding a new JS framework means adding a rule here.
 - `src/lib/pythonDetector.ts` — the Python equivalent: reads `requirements.txt`/`pyproject.toml` (if present) to detect `flask` vs plain `python`, and resolves the venv-creation + `pip install` command.
@@ -260,7 +286,7 @@ Run every time you ship a change (after `setup` has run at least once):
 - `src/lib/pm2.ts` — all process management goes through the `PM2Adapter` interface; `SSHPM2Adapter` runs `pm2` subcommands on the server via `sshExec`, branching its `start()` command shape on `RemoteApp.runtime` (`npm run <script>` vs `--interpreter <venv-python>`).
 - `src/lib/doctorChecks.ts` — individual environment health checks, run against the remote server over SSH.
 
-Out of scope for this phase (left as clean extension points, not built): Docker, FastAPI/ASGI (`gunicorn`/`uvicorn` in front) support, env/secrets injection, multi-server roles or accessories (databases, etc.), HTTPS/SSL termination, automatic DNS/hosts-file management, non-Debian/Ubuntu `setup` support, and a rollback command.
+Out of scope for this phase (left as clean extension points, not built): Docker, FastAPI/ASGI (`gunicorn`/`uvicorn` in front) support, env/secrets injection, multi-server roles or accessories (databases, etc.), wildcard/DNS-01 certificates, automatic DNS/hosts-file management, non-Debian/Ubuntu `setup` support, and a rollback command.
 
 ## Testing
 

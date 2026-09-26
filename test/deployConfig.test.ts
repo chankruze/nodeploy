@@ -171,6 +171,70 @@ describe("validateDeployConfig", () => {
     expect(config.port).toBeUndefined();
   });
 
+  it("accepts proxy.ssl as an object with an email", () => {
+    const config = validateDeployConfig({
+      service: "api",
+      repo: "git@github.com:user/api.git",
+      server: "1.2.3.4",
+      ssh: { user: "root" },
+      port: 3000,
+      proxy: { host: "api.example.com", ssl: { email: "me@example.com" } },
+    });
+
+    expect(config.proxy).toEqual({
+      host: "api.example.com",
+      ssl: { email: "me@example.com" },
+    });
+  });
+
+  it("accepts proxy.ssl: true as shorthand for ssl without an email", () => {
+    const config = validateDeployConfig({
+      service: "api",
+      repo: "git@github.com:user/api.git",
+      server: "1.2.3.4",
+      ssh: { user: "root" },
+      proxy: { host: "api.example.com", ssl: true },
+    });
+
+    expect(config.proxy?.ssl).toEqual({});
+  });
+
+  it("treats proxy.ssl: false as no ssl", () => {
+    const config = validateDeployConfig({
+      service: "api",
+      repo: "git@github.com:user/api.git",
+      server: "1.2.3.4",
+      ssh: { user: "root" },
+      proxy: { host: "api.example.com", ssl: false },
+    });
+
+    expect(config.proxy).toEqual({ host: "api.example.com" });
+  });
+
+  it("throws when proxy.ssl is not a boolean or object", () => {
+    expect(() =>
+      validateDeployConfig({
+        service: "api",
+        repo: "git@github.com:user/api.git",
+        server: "1.2.3.4",
+        ssh: { user: "root" },
+        proxy: { host: "api.example.com", ssl: "yes" },
+      }),
+    ).toThrow(/proxy.ssl/);
+  });
+
+  it("throws when proxy.ssl.email is not a non-empty string", () => {
+    expect(() =>
+      validateDeployConfig({
+        service: "api",
+        repo: "git@github.com:user/api.git",
+        server: "1.2.3.4",
+        ssh: { user: "root" },
+        proxy: { host: "api.example.com", ssl: { email: "" } },
+      }),
+    ).toThrow(/proxy.ssl.email/);
+  });
+
   it("throws on non-object input", () => {
     expect(() => validateDeployConfig(null)).toThrow();
     expect(() => validateDeployConfig("nope")).toThrow();

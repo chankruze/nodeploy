@@ -1,3 +1,4 @@
+import { certificateDir } from "./nginx.js";
 import { withNvm } from "./remoteEnv.js";
 import { sshExec, sshTest } from "./ssh.js";
 import type { DeployConfig, DoctorCheckResult, SSHTarget } from "../types.js";
@@ -63,6 +64,68 @@ export function checkNginx(target: SSHTarget): Promise<DoctorCheckResult> {
     optional: true,
     hint: "nginx not found on remote PATH (optional unless using proxy)",
   });
+}
+
+export function checkCertbot(target: SSHTarget): Promise<DoctorCheckResult> {
+  return checkRemoteBinary(target, "certbot", "--version", {
+    hint: "certbot not found on remote PATH — required for proxy.ssl, run `nodeploy setup`",
+  });
+}
+
+/** certbot's timer renews at 30 days left, so a cert inside this window
+ * means renewal has been failing. */
+const CERT_EXPIRY_WARNING_DAYS = 14;
+
+export async function checkCertificate(
+  target: SSHTarget,
+  host: string,
+  now: Date = new Date(),
+): Promise<DoctorCheckResult> {
+  let stdout: string;
+  try {
+    ({ stdout } = await sshExec(
+      target,
+      `sudo openssl x509 -enddate -noout -in "${certificateDir(host)}/fullchain.pem"`,
+    ));
+  } catch {
+    return {
+      name: "TLS certificate",
+      ok: false,
+      message: `no certificate for ${host} yet — \`nodeploy deploy\` issues one`,
+      optional: true,
+    };
+  }
+
+  // Output looks like: notAfter=Dec 25 12:00:00 2026 GMT
+  const expiresAt = new Date(stdout.trim().replace(/^notAfter=/, ""));
+  if (Number.isNaN(expiresAt.getTime())) {
+    return {
+      name: "TLS certificate",
+      ok: false,
+      message: `could not parse expiry for ${host}: ${stdout.trim()}`,
+      optional: true,
+    };
+  }
+
+  const daysLeft = Math.floor(
+    (expiresAt.getTime() - now.getTime()) / (24 * 60 * 60 * 1000),
+  );
+  if (daysLeft < CERT_EXPIRY_WARNING_DAYS) {
+    return {
+      name: "TLS certificate",
+      ok: false,
+      message:
+        daysLeft < 0
+          ? `certificate for ${host} expired ${-daysLeft} day(s) ago — check \`sudo certbot renew --dry-run\` on the server`
+          : `certificate for ${host} expires in ${daysLeft} day(s) — auto-renewal may be failing, check \`sudo certbot renew --dry-run\` on the server`,
+    };
+  }
+
+  return {
+    name: "TLS certificate",
+    ok: true,
+    message: `${host} valid for ${daysLeft} more day(s)`,
+  };
 }
 
 export async function checkDiskSpace(
@@ -165,6 +228,10 @@ export async function runAllChecks(
 
   if (config.runtime === "python") {
     checks.push(checkPython(target));
+  }
+
+  if (config.proxy?.ssl) {
+    checks.push(checkCertbot(target), checkCertificate(target, config.proxy.host));
   }
 
   return [connection, ...(await Promise.all(checks))];
