@@ -7,6 +7,8 @@ import { registerRestartCommand } from "./commands/restart.js";
 import { registerStopCommand } from "./commands/stop.js";
 import { registerLogsCommand } from "./commands/logs.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
+import { registerEdgeCommand } from "./commands/edge.js";
+import { registerRemoveCommand } from "./commands/remove.js";
 
 export function createProgram(): Command {
   const program = new Command();
@@ -24,6 +26,8 @@ export function createProgram(): Command {
   registerStopCommand(program);
   registerLogsCommand(program);
   registerDoctorCommand(program);
+  registerRemoveCommand(program);
+  registerEdgeCommand(program);
 
   return program;
 }

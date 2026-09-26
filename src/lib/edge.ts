@@ -1,3 +1,4 @@
+import { ensureNginxStreamModule } from "./serverSetup.js";
 import { sshExec } from "./ssh.js";
 import type { SSHTarget } from "../types.js";
 
@@ -10,7 +11,10 @@ import type { SSHTarget } from "../types.js";
 //
 // Every per-app file is keyed by hostname, not service name — hosts are
 // unique by definition, while two apps on different upstreams can easily
-// share a service name like "api".
+// share a service name like "api". A route's host can also be a wildcard
+// (*.example.com): both nginx's server_name and the SNI map prefer an exact
+// host over any wildcard, so per-app routes always win over a domain-wide
+// default.
 
 export const EDGE_STREAM_CONF = "/etc/nginx/stream.d/nodeploy.conf";
 export const EDGE_ROUTES_DIR = "/etc/nginx/stream.d/nodeploy-routes";
@@ -29,16 +33,46 @@ export const LOCAL_TLS_LISTEN = `listen ${EDGE_LOCAL_TLS} ssl http2;`;
 const NGINX_CONF = "/etc/nginx/nginx.conf";
 const STREAM_INCLUDE = "include /etc/nginx/stream.d/*.conf;";
 
+const HOST_PATTERN = /^(\*\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$/i;
+const UPSTREAM_PATTERN = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i;
+
+/** Accepts an exact hostname or a `*.domain` wildcard. These end up in both
+ * nginx config and shell commands, so nothing else gets through. */
+export function assertRouteHost(host: string): void {
+  if (!HOST_PATTERN.test(host)) {
+    throw new Error(
+      `"${host}" isn't a valid route host — use a hostname like app.example.com, or a wildcard like *.example.com`,
+    );
+  }
+}
+
+/** Accepts a hostname or IPv4 address (no port — the edge always forwards
+ * to the upstream's nginx on 80/443). */
+export function assertUpstream(upstream: string): void {
+  if (!UPSTREAM_PATTERN.test(upstream)) {
+    throw new Error(
+      `"${upstream}" isn't a valid upstream — use a hostname or IPv4 address, without a port`,
+    );
+  }
+}
+
+/** File-name key for a route host. `*` would make file names glob patterns,
+ * so wildcards become `_wildcard.<domain>` — `_` can't appear in a real
+ * hostname, so this can't collide with an exact host's files. */
+function routeKey(host: string): string {
+  return host.startsWith("*.") ? `_wildcard.${host.slice(2)}` : host;
+}
+
 export function edgeSitePath(host: string): string {
-  return `/etc/nginx/sites-available/edge.${host}.conf`;
+  return `/etc/nginx/sites-available/edge.${routeKey(host)}.conf`;
 }
 
 export function edgeSiteLink(host: string): string {
-  return `/etc/nginx/sites-enabled/edge.${host}.conf`;
+  return `/etc/nginx/sites-enabled/edge.${routeKey(host)}.conf`;
 }
 
 export function edgeRoutePath(host: string): string {
-  return `${EDGE_ROUTES_DIR}/${host}.conf`;
+  return `${EDGE_ROUTES_DIR}/${routeKey(host)}.conf`;
 }
 
 // stream {} has to sit at nginx.conf's top level — sites-enabled/ and
@@ -359,4 +393,88 @@ export async function deployEdgeRoute(
         }
       : { path: edgeRoutePath(host), remove: true },
   ]);
+}
+
+/** Removes every edge route for `host` (port-80 forward and SNI route).
+ * Missing files are fine, so this is safe to run for a host with neither. */
+export async function removeEdgeRoute(
+  target: SSHTarget,
+  host: string,
+): Promise<void> {
+  await applyNginxChanges(target, [
+    { path: edgeSitePath(host), remove: true, enableAs: edgeSiteLink(host) },
+    { path: edgeRoutePath(host), remove: true },
+  ]);
+}
+
+/** Sets up the edge for HTTPS routing if it isn't already. Returns the hosts
+ * moved off 443 by bootstrapEdge, if it ran. */
+export async function ensureEdgeBootstrapped(
+  target: SSHTarget,
+): Promise<string[]> {
+  if (await isEdgeBootstrapped(target)) return [];
+  await ensureNginxStreamModule(target);
+  return bootstrapEdge(target);
+}
+
+export interface EdgeRouteEntry {
+  host: string;
+  /** Upstream the port-80 forward proxies to. */
+  http?: string;
+  /** host:port the SNI router sends this host's HTTPS to. */
+  https?: string;
+}
+
+const LISTING_MARKER = "@@nodeploy";
+
+/** Parses listEdgeRoutes' remote output into one entry per host, sorted so
+ * exact hosts list before the wildcards they take precedence over. */
+export function parseEdgeListing(stdout: string): EdgeRouteEntry[] {
+  const entries = new Map<string, EdgeRouteEntry>();
+  const entry = (host: string) => {
+    let existing = entries.get(host);
+    if (!existing) {
+      existing = { host };
+      entries.set(host, existing);
+    }
+    return existing;
+  };
+
+  const sections = stdout.split(`${LISTING_MARKER} `).slice(1);
+  for (const section of sections) {
+    const [kind, ...lines] = section.split("\n");
+    const body = lines.map((line) => line.replace(/#.*/, "")).join("\n");
+
+    if (kind.trim() === "site") {
+      const host = body.match(/server_name\s+([^\s;]+);/)?.[1];
+      const upstream = body.match(/proxy_pass\s+http:\/\/([^\s;/]+)/)?.[1];
+      if (host && upstream) entry(host).http = upstream;
+    } else if (kind.trim() === "route") {
+      const route = body.match(/^\s*(\S+)\s+([^\s;]+);/m);
+      if (route) entry(route[1]).https = route[2];
+    }
+  }
+
+  return [...entries.values()].sort((a, b) => {
+    const aWild = a.host.startsWith("*.");
+    const bWild = b.host.startsWith("*.");
+    if (aWild !== bWild) return aWild ? 1 : -1;
+    return a.host.localeCompare(b.host);
+  });
+}
+
+/** Lists every route nodeploy manages on the edge, whether written by
+ * `deploy` (per-app) or `nodeploy edge add` (manual, e.g. wildcards). */
+export async function listEdgeRoutes(
+  target: SSHTarget,
+): Promise<EdgeRouteEntry[]> {
+  const { stdout } = await sshExec(
+    target,
+    [
+      `for f in /etc/nginx/sites-enabled/edge.*.conf; do [ -e "$f" ] && { echo "${LISTING_MARKER} site"; cat "$f"; }; done`,
+      `for f in ${EDGE_ROUTES_DIR}/*.conf; do [ -e "$f" ] && { echo "${LISTING_MARKER} route"; cat "$f"; }; done`,
+      "true",
+    ].join("; "),
+  );
+  return parseEdgeListing(stdout);
 }

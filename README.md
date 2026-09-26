@@ -88,6 +88,8 @@ nodeploy status       # show the PM2 status of the deployed service
 nodeploy logs         # stream PM2 logs
 nodeploy restart
 nodeploy stop
+nodeploy remove       # take the app off its server (and edge); --purge to delete its files too
+nodeploy edge list    # routes on the edge proxy, if you use one
 ```
 
 `setup` is idempotent and safe to re-run, but you only need it once per app per server — after that, `deploy` is the day-to-day command.
@@ -198,7 +200,31 @@ Things to know:
 - **The SNI router owns port 443 on the edge.** nodeploy's own HTTPS apps already on the edge are moved off it automatically (see below); `setup` refuses, naming the files, if anything *else* listens on 443 there. To keep such a hand-written HTTPS site, have it listen on `127.0.0.1:8443` and add a `<host> 127.0.0.1:8443;` route file for it in `/etc/nginx/stream.d/nodeploy-routes/`.
 - **Client IPs:** over HTTPS, upstream apps see the edge's IP as the client (passthrough can't add `X-Forwarded-For` without decrypting). Over HTTP, the real IP is in `X-Forwarded-For`.
 - **Apps running on the edge box itself** don't set `edge` (nodeploy rejects `edge.server` equal to `server`) — they're configured like any other app, `ssl` included. `deploy` detects that its server is an edge (it has `/etc/nginx/stream.d/nodeploy.conf`) and has the app's HTTPS block listen on `127.0.0.1:8443` instead of 443, with a `<host> 127.0.0.1:8443;` route so the SNI router sends that hostname back to it — applied together, in one transaction. If a box already has nodeploy HTTPS apps on 443 when it *becomes* an edge, `setup` moves them to `127.0.0.1:8443` with routes in the same transaction as installing the router. Over HTTPS, those apps see `127.0.0.1` as the client IP.
-- Nothing is removed automatically when an app goes away; delete its `edge.<host>.conf` (both `sites-available/` and `sites-enabled/`) and route file on the edge, then `sudo systemctl reload nginx`.
+- `nodeploy remove` takes an app's routes off the edge along with the app itself (see [Removing an app](#removing-an-app)).
+
+#### Managing edge routes directly: wildcards and non-nodeploy apps
+
+`nodeploy edge` manages routes on this app's edge (`proxy.edge`, or the app's own server if it runs on the edge) without deploying anything:
+
+```sh
+nodeploy edge list                                          # every route, and where it goes
+nodeploy edge add '*.brothersequipment.in' 192.168.0.16     # a whole domain → one server
+nodeploy edge add legacy.geekofia.cloud 192.168.0.20        # a single app not deployed by nodeploy
+nodeploy edge add status.geekofia.cloud 192.168.0.20 --http-only
+nodeploy edge remove '*.brothersequipment.in'
+```
+
+A wildcard route is a domain-wide default: every subdomain without a route of its own goes to that upstream, on both 80 and 443 — including ACME challenges, so apps there can get certificates via `proxy.ssl` without needing `proxy.edge` at all. Exact hosts always win over wildcards (in both nginx's `server_name` matching and the SNI router), so apps deployed with `proxy.edge` keep their own routes. Quote wildcards so your shell doesn't expand the `*`. `*.example.com` doesn't match the bare `example.com` — add that as its own route. `edge add` sets up the edge's SNI router first if needed (same as `setup` for an `ssl` app); `--http-only` skips HTTPS routing entirely. Wildcard route files are stored as `_wildcard.<domain>` (e.g. `sites-available/edge._wildcard.example.com.conf`), since `_` can't appear in a real hostname.
+
+### Removing an app
+
+```sh
+nodeploy remove            # asks you to type the service name to confirm
+nodeploy remove --purge    # also deletes deploy_path, the TLS certificate, and the deploy key
+nodeploy remove --yes      # skip the prompt (required when not run from a terminal)
+```
+
+In order: the app's routes on its edge (so public traffic stops first), its nginx site on its own server (plus its local SNI route, if that server is an edge), then its PM2 process. `--purge` additionally deletes `deploy_path` (refusing if it resolves to `/` or `$HOME`), runs `certbot delete` for `proxy.host`, and deletes the app's deploy key on the server — remove it from the repo's Deploy keys yourself. Without `--purge`, those are kept, so `nodeploy deploy` brings the app straight back. nginx changes go through the same `nginx -t`-then-rollback as deploys. Each step is independent: if one fails (say the edge is unreachable), the rest still run, and re-running `remove` finishes the job.
 
 ### Overriding the detected start script
 
@@ -319,7 +345,8 @@ Run every time you ship a change (after `setup` has run at least once):
 - `src/lib/serverSetup.ts` — idempotent provisioning steps (git/nginx/certbot via apt, Node via nvm, PM2 via npm, PM2 boot startup, Python3/venv via apt, deploy path creation) used by `nodeploy setup`.
 - `src/lib/git.ts` — clones or fetches+resets the app's repo on the server over SSH.
 - `src/lib/nginx.ts` — generates an nginx server block (reverse-proxy for PM2 apps, or static-file `root` for `vite`/`cra`; HTTP-only, or an HTTP→HTTPS redirect plus a 443 block when `proxy.ssl` is set), issues Let's Encrypt certs via certbot's webroot challenge, and pipes the config to the server via SSH (`sites-available` → `sites-enabled` → `nginx -t` → reload).
-- `src/lib/edge.ts` ��� edge-proxy routing: builds the per-host port-80 forward and 443 SNI route files plus the shared SNI router, and applies changes to the edge transactionally (`nginx -t`, restoring every touched file on failure).
+- `src/lib/edge.ts` — edge-proxy routing: builds the per-host (or wildcard) port-80 forward and 443 SNI route files plus the shared SNI router, lists/removes routes, and applies changes transactionally (`nginx -t`, restoring every touched file on failure).
+- `src/lib/remove.ts` — the remote side of `nodeploy remove`: site, deploy path, certificate, and deploy key removal.
 - `src/lib/deployConfig.ts` — loads and validates `nodeploy.yml` (YAML via the `yaml` package), applying defaults for `branch`/`deploy_path`/`ssh.port`/`node_version`/`runtime`.
 - `src/lib/detector.ts` — pluggable, ordered rule list for Node app-type detection from a `package.json`, plus `resolveStaticDir` mapping static-output app types (`vite`/`cra`) to their build directory. Adding a new JS framework means adding a rule here.
 - `src/lib/pythonDetector.ts` — the Python equivalent: reads `requirements.txt`/`pyproject.toml` (if present) to detect `flask` vs plain `python`, and resolves the venv-creation + `pip install` command.

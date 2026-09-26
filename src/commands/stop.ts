@@ -18,7 +18,7 @@ export function registerStopCommand(program: Command): void {
 
       if (!isPM2Managed && (await isStaticSiteEnabled(target, config.service))) {
         fail(
-          `${config.service} is a static app served directly by nginx — there's no PM2 process to stop. Remove /etc/nginx/sites-enabled/${config.service}.conf on the server to take it down.`,
+          `${config.service} is a static app served directly by nginx — there's no PM2 process to stop. Run \`nodeploy remove\` to take it down.`,
         );
         process.exitCode = 1;
         return;

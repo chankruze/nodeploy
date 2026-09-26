@@ -267,3 +267,116 @@ describe("bootstrapEdge", () => {
     expect(execa).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("route hosts and wildcards", () => {
+  it("accepts exact hosts and *.domain wildcards, rejecting anything else", async () => {
+    const { assertRouteHost, assertUpstream } = await import("../src/lib/edge.js");
+
+    expect(() => assertRouteHost("bob.geekofia.cloud")).not.toThrow();
+    expect(() => assertRouteHost("*.brothersequipment.in")).not.toThrow();
+    for (const bad of ["*", "*.com.", "a.*.com", "bob", "bob.cloud; rm -rf /", "bad_host.com", ".example.com"]) {
+      expect(() => assertRouteHost(bad), bad).toThrow(/isn't a valid route host/);
+    }
+
+    expect(() => assertUpstream("192.168.0.16")).not.toThrow();
+    expect(() => assertUpstream("app-box.lan")).not.toThrow();
+    for (const bad of ["192.168.0.16:443", "$(reboot)", ""]) {
+      expect(() => assertUpstream(bad), bad).toThrow(/isn't a valid upstream/);
+    }
+  });
+
+  it("stores wildcard routes under a _wildcard key that can't collide with a real host", async () => {
+    const { edgeSitePath, edgeSiteLink, edgeRoutePath } = await import("../src/lib/edge.js");
+
+    expect(edgeSitePath("*.example.com")).toBe("/etc/nginx/sites-available/edge._wildcard.example.com.conf");
+    expect(edgeSiteLink("*.example.com")).toBe("/etc/nginx/sites-enabled/edge._wildcard.example.com.conf");
+    expect(edgeRoutePath("*.example.com")).toBe("/etc/nginx/stream.d/nodeploy-routes/_wildcard.example.com.conf");
+    expect(edgeRoutePath("bob.example.com")).toBe("/etc/nginx/stream.d/nodeploy-routes/bob.example.com.conf");
+  });
+
+  it("writes a wildcard server_name and SNI key as-is into the config", async () => {
+    execa.mockReset();
+    execa.mockResolvedValue({ stdout: "" });
+
+    await deployEdgeRoute(edge, "*.brothersequipment.in", "192.168.0.16", true);
+
+    const script = scriptInput(1);
+    expect(script).toContain("server_name *.brothersequipment.in;");
+    expect(script).toContain("*.brothersequipment.in 192.168.0.16:443;");
+  });
+});
+
+describe("removeEdgeRoute", () => {
+  beforeEach(() => {
+    execa.mockReset();
+  });
+
+  it("removes the port-80 forward, its symlink, and the SNI route in one transactional apply", async () => {
+    const { removeEdgeRoute } = await import("../src/lib/edge.js");
+    execa.mockResolvedValue({ stdout: "" });
+
+    await removeEdgeRoute(edge, "bob.geekofia.cloud");
+
+    const script = scriptInput(0);
+    expect(script).toContain('sudo rm -f "/etc/nginx/sites-available/edge.bob.geekofia.cloud.conf"');
+    expect(script).toContain('sudo rm -f "/etc/nginx/sites-enabled/edge.bob.geekofia.cloud.conf"');
+    expect(script).toContain('sudo rm -f "/etc/nginx/stream.d/nodeploy-routes/bob.geekofia.cloud.conf"');
+    expect(script).toContain("if ! sudo nginx -t; then");
+  });
+});
+
+describe("parseEdgeListing", () => {
+  it("merges each host's HTTP forward and SNI route, listing exact hosts before wildcards", async () => {
+    const { buildEdgeHttpForward, parseEdgeListing } = await import("../src/lib/edge.js");
+    const stdout = [
+      "@@nodeploy site",
+      buildEdgeHttpForward("*.brothersequipment.in", "192.168.0.16"),
+      "@@nodeploy site",
+      buildEdgeHttpForward("bob.geekofia.cloud", "192.168.0.12"),
+      "@@nodeploy route",
+      buildEdgeRoute("*.brothersequipment.in", "192.168.0.16:443"),
+      "@@nodeploy route",
+      buildEdgeRoute("bob.geekofia.cloud", "192.168.0.12:443"),
+      "@@nodeploy route",
+      buildEdgeRoute("payroll.brothersequipment.in", "127.0.0.1:8443"),
+    ].join("\n");
+
+    expect(parseEdgeListing(stdout)).toEqual([
+      { host: "bob.geekofia.cloud", http: "192.168.0.12", https: "192.168.0.12:443" },
+      { host: "payroll.brothersequipment.in", https: "127.0.0.1:8443" },
+      { host: "*.brothersequipment.in", http: "192.168.0.16", https: "192.168.0.16:443" },
+    ]);
+  });
+
+  it("returns nothing for an edge with no routes", async () => {
+    const { parseEdgeListing } = await import("../src/lib/edge.js");
+    expect(parseEdgeListing("")).toEqual([]);
+  });
+});
+
+describe("ensureEdgeBootstrapped", () => {
+  beforeEach(() => {
+    execa.mockReset();
+  });
+
+  it("does nothing when the edge already has its SNI router", async () => {
+    const { ensureEdgeBootstrapped } = await import("../src/lib/edge.js");
+    execa.mockResolvedValueOnce({ stdout: "" });
+
+    expect(await ensureEdgeBootstrapped(edge)).toEqual([]);
+    expect(execa).toHaveBeenCalledTimes(1);
+  });
+
+  it("installs the stream module and bootstraps when it doesn't", async () => {
+    const { ensureEdgeBootstrapped } = await import("../src/lib/edge.js");
+    execa.mockRejectedValueOnce(new Error("exit 1")); // not bootstrapped
+    execa.mockResolvedValueOnce({ stdout: "" }); // stream module present
+    execa.mockResolvedValueOnce({ stdout: "# configuration file /etc/nginx/nginx.conf:\nhttp {}\n" }); // nginx -T
+    execa.mockResolvedValue({ stdout: "" });
+
+    await ensureEdgeBootstrapped(edge);
+
+    expect(remoteCommand(3)).toBe('sudo mkdir -p "/etc/nginx/stream.d/nodeploy-routes"');
+    expect(scriptInput(4)).toContain("ssl_preread on;");
+  });
+});
