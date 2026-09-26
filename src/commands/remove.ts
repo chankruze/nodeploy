@@ -35,7 +35,7 @@ export function registerRemoveCommand(program: Command): void {
     )
     .option(
       "--purge",
-      "also delete the deploy directory, TLS certificate, and deploy key",
+      "also delete the deploy directory, TLS certificate, stored Cloudflare API token (if any), and deploy key",
       false,
     )
     .option("-y, --yes", "skip the confirmation prompt", false)

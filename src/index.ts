@@ -18,8 +18,16 @@ export function createProgram(): Command {
 
   program
     .name("nodeploy")
-    .description("A lightweight, self-hosted deployment CLI for Node.js apps")
-    .version(version);
+    .description(
+      "A lightweight, self-hosted deployment CLI for Node.js and Python apps",
+    )
+    .version(version)
+    // beforeAll: on every help screen, including `nodeploy <command> --help`.
+    .addHelpText("beforeAll", `nodeploy v${version}\n`)
+    .addHelpText(
+      "after",
+      "\nRun `nodeploy help <command>` (or `nodeploy <command> --help`) to see a command's options.",
+    );
 
   registerInitCommand(program);
   registerSetupCommand(program);
