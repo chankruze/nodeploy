@@ -145,6 +145,8 @@ ssh:
 
 ### HTTPS and one subdomain per app
 
+For how all of this fits together — every case from a single server to an edge fronting several LAN servers, with diagrams — see [docs/https-and-edge-routing.md](docs/https-and-edge-routing.md).
+
 Every app gets its own nginx server block keyed on `proxy.host`, so several apps on one server can each have their own subdomain — nginx picks the block by the request's `Host` header (and, over HTTPS, by SNI):
 
 ```yaml
