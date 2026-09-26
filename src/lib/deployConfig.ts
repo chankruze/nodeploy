@@ -13,6 +13,7 @@ import type {
   Runtime,
   SSHConfig,
   SSHTarget,
+  SSLConfig,
 } from "../types.js";
 
 // `~` only expands via shell tilde-expansion, which doesn't happen when a path
@@ -206,7 +207,15 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
           "nodeploy.yml: \"proxy.ssl.email\" must be a non-empty string",
         );
       }
-      proxy.ssl = { email: sslRaw.email as string | undefined };
+      if (sslRaw.dns !== undefined && sslRaw.dns !== "cloudflare") {
+        throw new Error(
+          "nodeploy.yml: \"proxy.ssl.dns\" must be \"cloudflare\" (the only DNS provider supported so far)",
+        );
+      }
+      proxy.ssl = {
+        email: sslRaw.email as string | undefined,
+        dns: sslRaw.dns as SSLConfig["dns"],
+      };
     } else if (proxyRaw.ssl !== undefined && proxyRaw.ssl !== false) {
       throw new Error(
         "nodeploy.yml: \"proxy.ssl\" must be true, false, or an object (e.g. ssl: { email: you@example.com })",

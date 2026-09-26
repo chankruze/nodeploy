@@ -1,5 +1,10 @@
 import type { Command } from "commander";
-import { DEPLOY_CONFIG_FILENAME } from "../constants.js";
+import { CLOUDFLARE_TOKEN_ENV, DEPLOY_CONFIG_FILENAME } from "../constants.js";
+import {
+  ensureCertbotDnsCloudflare,
+  hasCloudflareCredentials,
+  writeCloudflareCredentials,
+} from "../lib/cloudflare.js";
 import {
   loadDeployConfig,
   toEdgeSSHTarget,
@@ -109,6 +114,36 @@ export function registerSetupCommand(program: Command): void {
             warn(
               `  Could not install certbot — requires passwordless sudo. \`proxy.ssl\` won't work until this is fixed. (${errorMessage(error)})`,
             );
+          }
+
+          if (config.proxy.ssl.dns === "cloudflare") {
+            const { host } = config.proxy;
+            info("  Checking certbot's Cloudflare DNS plugin...");
+            try {
+              (await ensureCertbotDnsCloudflare(target))
+                ? success("  certbot Cloudflare DNS plugin installed")
+                : success("  certbot Cloudflare DNS plugin already present");
+            } catch (error) {
+              warn(
+                `  Could not install python3-certbot-dns-cloudflare — requires passwordless sudo. (${errorMessage(error)})`,
+              );
+            }
+
+            const token = process.env[CLOUDFLARE_TOKEN_ENV];
+            if (token) {
+              await writeCloudflareCredentials(target, host, token.trim());
+              success(
+                `  Cloudflare API token for ${host} stored on the server (root-only)`,
+              );
+            } else if (await hasCloudflareCredentials(target, host)) {
+              info(
+                `  Cloudflare API token for ${host} already on the server — set ${CLOUDFLARE_TOKEN_ENV} and re-run setup to replace it`,
+              );
+            } else {
+              warn(
+                `  No Cloudflare API token on the server for ${host} — create one with Zone → DNS → Edit on its zone, then re-run setup with ${CLOUDFLARE_TOKEN_ENV} set. \`deploy\` can't issue the certificate until then.`,
+              );
+            }
           }
         }
 

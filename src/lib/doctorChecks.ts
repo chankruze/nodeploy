@@ -1,3 +1,5 @@
+import { CLOUDFLARE_TOKEN_ENV } from "../constants.js";
+import { verifyCloudflareToken } from "./cloudflare.js";
 import { toEdgeSSHTarget } from "./deployConfig.js";
 import {
   EDGE_LOCAL_PP,
@@ -78,6 +80,29 @@ export function checkCertbot(target: SSHTarget): Promise<DoctorCheckResult> {
   return checkRemoteBinary(target, "certbot", "--version", {
     hint: "certbot not found on remote PATH — required for proxy.ssl, run `nodeploy setup`",
   });
+}
+
+/** For DNS-01 via Cloudflare: the token certbot renews with is on the server
+ * and Cloudflare still considers it active. A revoked or expired token
+ * doesn't break anything until the next renewal, ~60 days later, so this is
+ * worth catching early. */
+export async function checkCloudflareToken(
+  target: SSHTarget,
+  host: string,
+): Promise<DoctorCheckResult> {
+  const name = "Cloudflare DNS";
+  const status = await verifyCloudflareToken(target, host);
+  if (status === "active") {
+    return { name, ok: true, message: `API token for ${host} is active` };
+  }
+  return {
+    name,
+    ok: false,
+    message:
+      status === "missing"
+        ? `no Cloudflare API token on the server for ${host} — set ${CLOUDFLARE_TOKEN_ENV} and run \`nodeploy setup\``
+        : `Cloudflare doesn't accept the API token for ${host} (revoked, expired, or unreachable) — set ${CLOUDFLARE_TOKEN_ENV} to a valid one and re-run \`nodeploy setup\` before the next renewal`,
+  };
 }
 
 /** certbot's timer renews at 30 days left, so a cert inside this window
@@ -395,6 +420,9 @@ export async function runAllChecks(
 
   if (config.proxy?.ssl) {
     checks.push(checkCertbot(target), checkCertificate(target, config.proxy.host));
+    if (config.proxy.ssl.dns === "cloudflare") {
+      checks.push(checkCloudflareToken(target, config.proxy.host));
+    }
   }
 
   if (config.proxy?.ssl && !config.proxy.edge) {

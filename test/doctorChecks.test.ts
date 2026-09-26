@@ -9,6 +9,7 @@ const {
   checkDeployPathWritable,
   checkMemory,
   checkCertificate,
+  checkCloudflareToken,
   checkEdgeProxyProtocolPort,
   checkEdgeRouting,
   checkEdgeUpstream,
@@ -122,6 +123,24 @@ describe("doctorChecks", () => {
     expect(result.ok).toBe(false);
     expect(result.optional).toBeUndefined();
     expect(result.message).toContain("expires in 5 day(s)");
+  });
+
+  it("checkCloudflareToken fails hard on a missing or rejected token", async () => {
+    execa.mockResolvedValueOnce({ stdout: "" });
+    execa.mockResolvedValueOnce({ stdout: '{"result":{"status":"active"},"success":true}' });
+    expect((await checkCloudflareToken(target, "hr.example.com")).ok).toBe(true);
+
+    execa.mockRejectedValueOnce(new Error("exit 1"));
+    const missing = await checkCloudflareToken(target, "hr.example.com");
+    expect(missing.ok).toBe(false);
+    expect(missing.optional).toBeUndefined();
+    expect(missing.message).toContain("CLOUDFLARE_API_TOKEN");
+
+    execa.mockResolvedValueOnce({ stdout: "" });
+    execa.mockResolvedValueOnce({ stdout: '{"success":false}' });
+    const rejected = await checkCloudflareToken(target, "hr.example.com");
+    expect(rejected.ok).toBe(false);
+    expect(rejected.message).toContain("before the next renewal");
   });
 
   it("checkCertificate is optional when no cert has been issued yet", async () => {

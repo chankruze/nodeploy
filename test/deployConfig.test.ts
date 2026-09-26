@@ -183,7 +183,7 @@ describe("validateDeployConfig", () => {
 
     expect(config.proxy).toEqual({
       host: "api.example.com",
-      ssl: { email: "me@example.com" },
+      ssl: { email: "me@example.com", dns: undefined },
     });
   });
 
@@ -209,6 +209,30 @@ describe("validateDeployConfig", () => {
     });
 
     expect(config.proxy).toEqual({ host: "api.example.com" });
+  });
+
+  it("accepts proxy.ssl.dns: cloudflare", () => {
+    const config = validateDeployConfig({
+      service: "api",
+      repo: "git@github.com:user/api.git",
+      server: "1.2.3.4",
+      ssh: { user: "root" },
+      proxy: { host: "hr.example.com", ssl: { dns: "cloudflare" } },
+    });
+
+    expect(config.proxy?.ssl).toEqual({ email: undefined, dns: "cloudflare" });
+  });
+
+  it("throws on an unsupported proxy.ssl.dns provider", () => {
+    expect(() =>
+      validateDeployConfig({
+        service: "api",
+        repo: "git@github.com:user/api.git",
+        server: "1.2.3.4",
+        ssh: { user: "root" },
+        proxy: { host: "hr.example.com", ssl: { dns: "route53" } },
+      }),
+    ).toThrow(/proxy.ssl.dns/);
   });
 
   it("throws when proxy.ssl is not a boolean or object", () => {

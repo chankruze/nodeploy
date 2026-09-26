@@ -134,6 +134,7 @@ ssh:
 #   host: inventory-api.internal
 #   ssl:                                      # optional — HTTPS via a Let's Encrypt cert
 #     email: you@example.com                  # (or just `ssl: true` to skip the email)
+#     # dns: cloudflare                       # prove the domain via DNS instead (LAN-only servers)
 #   edge:                                     # optional — see "Behind an edge proxy"
 #     server: 192.168.0.8
 ```
@@ -162,6 +163,28 @@ With `proxy.ssl` set, each app gets its own [Let's Encrypt](https://letsencrypt.
 - `nodeploy setup` installs `certbot` (passwordless sudo required).
 
 On the first deploy, nodeploy writes an HTTP-only config that serves the challenge from `/var/www/certbot`, runs `certbot certonly --webroot`, then switches to the HTTPS config — port 80 then only answers challenges and 301-redirects everything else to `https://`. Later deploys see the existing cert in `/etc/letsencrypt/live/<host>/` and skip straight to the HTTPS config. certbot never edits the nginx config (we don't use `certbot --nginx`), so redeploying can't clobber it. Renewal is handled by the systemd timer the `certbot` package installs; the certificate is registered with a `systemctl reload nginx` deploy hook so nginx picks up renewed certs. `nodeploy doctor` reports how many days each cert has left and fails if it's within 14 days of expiry (renewal normally happens at 30).
+
+#### LAN-only servers: DNS-01 via Cloudflare
+
+The default (HTTP-01) challenge needs Let's Encrypt to reach the server on port 80 from the internet. For a server with no public IP or open ports — an office LAN box reachable only internally — prove control of the domain with a DNS record instead, if the domain's DNS is on Cloudflare:
+
+```yaml
+proxy:
+  host: hr.geekofia.cloud
+  ssl:
+    email: you@geekofia.cloud
+    dns: cloudflare
+```
+
+1. In Cloudflare, create an API token (My Profile → API Tokens → Create Token → the **Edit zone DNS** template) with **Zone → DNS → Edit** on the domain's zone.
+2. Run setup with it in your environment — **never put it in `nodeploy.yml`**, which gets committed:
+   ```sh
+   CLOUDFLARE_API_TOKEN=... nodeploy setup
+   ```
+   This installs certbot's Cloudflare plugin (`python3-certbot-dns-cloudflare`) and stores the token on the server at `/etc/letsencrypt/nodeploy/cloudflare-<host>.ini`, readable by root only — certbot needs it there for every renewal, not just the first. It's sent over SSH stdin, so it never appears on a command line or in the server's process list. Re-run setup with a new token to rotate it; apps on different Cloudflare accounts each just use their own.
+3. `nodeploy deploy` then issues the certificate by creating a temporary `_acme-challenge` TXT record through the API — no inbound connectivity involved. Renewals work the same way, unattended.
+
+Clients still need `proxy.host` to resolve to the server — for a LAN-only app, typically a DNS-only (grey cloud) A record pointing at its private IP, e.g. `hr → 192.168.0.12`. `nodeploy doctor` checks with Cloudflare that the stored token is still active, since a revoked token otherwise only surfaces at the next renewal ~60 days later. Switching an existing app between `dns` and the default re-issues its certificate once on the next deploy, so its renewals switch challenge too. `nodeploy remove --purge` deletes the stored token along with the certificate (revoke it in Cloudflare as well if nothing else uses it). DNS-01 works with or without an edge.
 
 The app itself sees plain HTTP from nginx, with `X-Forwarded-Proto: https` set — frameworks that generate absolute URLs or set `Secure` cookies need to trust it (e.g. `app.set("trust proxy", 1)` in Express). HSTS isn't enabled, so turning `ssl` back off doesn't leave browsers stuck refusing plain HTTP; add it in your app if you want it.
 
@@ -346,6 +369,7 @@ Run every time you ship a change (after `setup` has run at least once):
 - `src/lib/git.ts` — clones or fetches+resets the app's repo on the server over SSH.
 - `src/lib/nginx.ts` — generates an nginx server block (reverse-proxy for PM2 apps, or static-file `root` for `vite`/`cra`; HTTP-only, or an HTTP→HTTPS redirect plus a 443 block when `proxy.ssl` is set), issues Let's Encrypt certs via certbot's webroot challenge, and pipes the config to the server via SSH (`sites-available` → `sites-enabled` → `nginx -t` → reload).
 - `src/lib/edge.ts` — edge-proxy routing: builds the per-host (or wildcard) port-80 forward and 443 SNI route files plus the shared SNI router, lists/removes routes, and applies changes transactionally (`nginx -t`, restoring every touched file on failure).
+- `src/lib/cloudflare.ts` — DNS-01 via Cloudflare: installs certbot's plugin, stores/verifies/removes the per-host API token on the server without it ever appearing in a process's arguments.
 - `src/lib/remove.ts` — the remote side of `nodeploy remove`: site, deploy path, certificate, and deploy key removal.
 - `src/lib/deployConfig.ts` — loads and validates `nodeploy.yml` (YAML via the `yaml` package), applying defaults for `branch`/`deploy_path`/`ssh.port`/`node_version`/`runtime`.
 - `src/lib/detector.ts` — pluggable, ordered rule list for Node app-type detection from a `package.json`, plus `resolveStaticDir` mapping static-output app types (`vite`/`cra`) to their build directory. Adding a new JS framework means adding a rule here.
@@ -354,7 +378,7 @@ Run every time you ship a change (after `setup` has run at least once):
 - `src/lib/pm2.ts` — all process management goes through the `PM2Adapter` interface; `SSHPM2Adapter` runs `pm2` subcommands on the server via `sshExec`, branching its `start()` command shape on `RemoteApp.runtime` (`npm run <script>` vs `--interpreter <venv-python>`).
 - `src/lib/doctorChecks.ts` — individual environment health checks, run against the remote server over SSH.
 
-Out of scope for this phase (left as clean extension points, not built): Docker, FastAPI/ASGI (`gunicorn`/`uvicorn` in front) support, env/secrets injection, multi-server roles or accessories (databases, etc.), wildcard/DNS-01 certificates, automatic DNS/hosts-file management, non-Debian/Ubuntu `setup` support, and a rollback command.
+Out of scope for this phase (left as clean extension points, not built): Docker, FastAPI/ASGI (`gunicorn`/`uvicorn` in front) support, env/secrets injection, multi-server roles or accessories (databases, etc.), wildcard certificates and DNS providers other than Cloudflare, automatic DNS/hosts-file management, non-Debian/Ubuntu `setup` support, and a rollback command.
 
 ## Testing
 

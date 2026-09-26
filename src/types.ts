@@ -30,12 +30,16 @@ export interface SSHConfig {
   port?: number;
 }
 
-/** HTTPS via a per-app Let's Encrypt certificate, issued with certbot's
- * webroot (HTTP-01) challenge — `proxy.host` must resolve publicly to the
- * server, with port 80 reachable from the internet. */
+/** HTTPS via a per-app Let's Encrypt certificate. By default it's issued
+ * with certbot's webroot (HTTP-01) challenge — `proxy.host` must resolve
+ * publicly to the server, with port 80 reachable from the internet. With
+ * `dns`, it's issued via a DNS-01 challenge instead, which needs neither
+ * (for LAN-only servers). */
 export interface SSLConfig {
   /** Let's Encrypt account email for expiry notices. Optional. */
   email?: string;
+  /** DNS provider for a DNS-01 challenge, instead of HTTP-01. */
+  dns?: "cloudflare";
 }
 
 /** A front-door nginx box that the router forwards public 80/443 to, which

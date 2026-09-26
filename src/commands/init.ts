@@ -53,6 +53,10 @@ ssh:
 #   # (e.g. my-app.example.com) whose DNS points at this server, with port 80 open.
 #   ssl:
 #     email: you@example.com
+#     # For a LAN-only server (no public IP or open port 80): prove the domain
+#     # via a Cloudflare DNS record instead. Run \`nodeploy setup\` with
+#     # CLOUDFLARE_API_TOKEN set (Zone -> DNS -> Edit) — never put it in here.
+#     # dns: cloudflare
 #   # If the router forwards public 80/443 to a different box (an "edge"),
 #   # nodeploy routes this host from there to this server.
 #   edge:

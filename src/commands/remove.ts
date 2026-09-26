@@ -5,6 +5,7 @@ import {
   toEdgeSSHTarget,
   toSSHTarget,
 } from "../lib/deployConfig.js";
+import { removeCloudflareCredentials } from "../lib/cloudflare.js";
 import { removeEdgeRoute } from "../lib/edge.js";
 import { fail, info, success, warn } from "../lib/logger.js";
 import { createPM2Adapter } from "../lib/pm2.js";
@@ -119,12 +120,18 @@ export function registerRemoveCommand(program: Command): void {
         });
 
         if (config.proxy?.ssl) {
-          const { host } = config.proxy;
+          const { host, ssl } = config.proxy;
           await step(`Deleting TLS certificate for ${host}`, async () =>
             (await deleteCertificate(target, host))
               ? `Certificate for ${host} deleted`
               : `No certificate for ${host}`,
           );
+          if (ssl.dns === "cloudflare") {
+            await step(`Deleting Cloudflare API token for ${host}`, async () => {
+              await removeCloudflareCredentials(target, host);
+              return `Cloudflare API token for ${host} deleted from the server — revoke it in Cloudflare too if nothing else uses it`;
+            });
+          }
         }
 
         await step("Deleting deploy key", async () => {

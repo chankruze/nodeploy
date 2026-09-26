@@ -71,6 +71,12 @@ function notAnEdge(): void {
   execa.mockRejectedValueOnce(new Error("exit 1"));
 }
 
+/** An existing cert that renews via HTTP-01 (webroot), as deploy expects
+ * for an ssl config without `dns` — so no (re)issuance. */
+function webrootCert(): void {
+  execa.mockResolvedValueOnce({ stdout: "webroot" });
+}
+
 function lastArg(call: number): string {
   const args = execa.mock.calls[call][1] as string[];
   return args[args.length - 1];
@@ -115,7 +121,8 @@ describe("behind an edge (real client IPs)", () => {
   it("deployProxyConfig passes the edge address through to the written config", async () => {
     execa.mockReset();
     notAnEdge();
-    execa.mockResolvedValue({}); // cert exists, write
+    webrootCert();
+    execa.mockResolvedValue({}); // write
 
     await deployProxyConfig(
       { host: "192.168.0.12", user: "root", port: 22 },
@@ -167,15 +174,16 @@ describe("deployProxyConfig", () => {
 
   it("with ssl and an existing cert, writes the HTTPS config directly", async () => {
     notAnEdge();
-    execa.mockResolvedValueOnce({}); // cert exists
+    webrootCert();
     execa.mockResolvedValueOnce({}); // write + reload
 
     await deployProxyConfig(target, "api", "api.example.com", 3000, {});
 
     expect(execa).toHaveBeenCalledTimes(3);
-    expect(lastArg(1)).toBe(
-      'sudo test -f "/etc/letsencrypt/live/api.example.com/fullchain.pem"',
+    expect(lastArg(1)).toContain(
+      'test -f "/etc/letsencrypt/live/api.example.com/fullchain.pem"',
     );
+    expect(lastArg(1)).toContain('"/etc/letsencrypt/renewal/api.example.com.conf"');
     expect(input(2)).toContain("listen 443 ssl http2;");
   });
 
@@ -234,7 +242,7 @@ describe("deployProxyConfig", () => {
   describe("on an edge box (its SNI router owns 443)", () => {
     it("with ssl, listens on the local TLS port and routes the host there, in one transactional apply", async () => {
       execa.mockResolvedValueOnce({}); // is an edge
-      execa.mockResolvedValueOnce({}); // cert exists
+      webrootCert();
       execa.mockResolvedValueOnce({}); // apply
 
       await deployProxyConfig(target, "payroll", "payroll.example.com", 8080, {});
@@ -336,7 +344,8 @@ describe("deployStaticProxyConfig", () => {
   it("with ssl, serves the static build over HTTPS", async () => {
     execa.mockResolvedValueOnce({}); // chmod
     notAnEdge();
-    execa.mockResolvedValue({}); // cert exists, write
+    webrootCert();
+    execa.mockResolvedValue({}); // write
 
     await deployStaticProxyConfig(
       target,
@@ -352,7 +361,10 @@ describe("deployStaticProxyConfig", () => {
   });
 
   it("on an edge with ssl, serves the static build on the local TLS port", async () => {
-    execa.mockResolvedValue({}); // chmod, is an edge, cert exists, apply
+    execa.mockResolvedValueOnce({}); // chmod
+    execa.mockResolvedValueOnce({}); // is an edge
+    webrootCert();
+    execa.mockResolvedValue({}); // apply
 
     await deployStaticProxyConfig(
       target,
@@ -365,5 +377,104 @@ describe("deployStaticProxyConfig", () => {
     expect(execa).toHaveBeenCalledTimes(4);
     expect(input(3)).toContain("listen 127.0.0.1:8444 ssl http2 proxy_protocol;");
     expect(input(3)).toContain("app.example.com 127.0.0.1:8444;");
+  });
+});
+
+describe("DNS-01 via Cloudflare", () => {
+  const target: SSHTarget = { host: "192.168.0.12", user: "root", port: 22 };
+
+  beforeEach(() => {
+    execa.mockReset();
+  });
+
+  it("issues directly with the Cloudflare plugin, without an HTTP-only config first", async () => {
+    notAnEdge();
+    execa.mockRejectedValueOnce(new Error("exit 1")); // no cert
+    execa.mockResolvedValueOnce({}); // credentials present
+    execa.mockResolvedValueOnce({}); // certbot
+    execa.mockResolvedValueOnce({}); // HTTPS write
+
+    await deployProxyConfig(target, "hr", "hr.geekofia.cloud", 3000, {
+      email: "me@geekofia.cloud",
+      dns: "cloudflare",
+    });
+
+    expect(execa).toHaveBeenCalledTimes(5);
+    expect(lastArg(2)).toBe(
+      'sudo test -f "/etc/letsencrypt/nodeploy/cloudflare-hr.geekofia.cloud.ini"',
+    );
+
+    const certbot = lastArg(3);
+    expect(certbot).toContain("sudo certbot certonly --dns-cloudflare");
+    expect(certbot).toContain(
+      '--dns-cloudflare-credentials "/etc/letsencrypt/nodeploy/cloudflare-hr.geekofia.cloud.ini"',
+    );
+    expect(certbot).toContain("--dns-cloudflare-propagation-seconds 30");
+    expect(certbot).not.toContain("--webroot");
+    expect(certbot).not.toContain("/var/www/certbot");
+    expect(certbot).not.toContain("--force-renewal");
+
+    expect(input(4)).toContain("listen 443 ssl http2;");
+  });
+
+  it("refuses to issue without a stored Cloudflare token, pointing at setup", async () => {
+    notAnEdge();
+    execa.mockRejectedValueOnce(new Error("exit 1")); // no cert
+    execa.mockRejectedValueOnce(new Error("exit 1")); // no credentials
+
+    await expect(
+      deployProxyConfig(target, "hr", "hr.geekofia.cloud", 3000, { dns: "cloudflare" }),
+    ).rejects.toThrow(/set CLOUDFLARE_API_TOKEN locally and re-run `nodeploy setup`/);
+    expect(execa).toHaveBeenCalledTimes(3);
+  });
+
+  it("does nothing to an existing cert that already renews via DNS", async () => {
+    notAnEdge();
+    execa.mockResolvedValueOnce({ stdout: "dns-cloudflare" });
+    execa.mockResolvedValueOnce({}); // write
+
+    await deployProxyConfig(target, "hr", "hr.geekofia.cloud", 3000, { dns: "cloudflare" });
+
+    expect(execa).toHaveBeenCalledTimes(3);
+    expect(lastArg(2)).not.toContain("certbot");
+  });
+
+  it("reissues a webroot cert via DNS when the config switches to dns, so renewals switch too", async () => {
+    notAnEdge();
+    execa.mockResolvedValueOnce({ stdout: "webroot" });
+    execa.mockResolvedValueOnce({}); // credentials present
+    execa.mockResolvedValueOnce({}); // certbot
+    execa.mockResolvedValueOnce({}); // write
+
+    await deployProxyConfig(target, "hr", "hr.geekofia.cloud", 3000, { dns: "cloudflare" });
+
+    const certbot = lastArg(3);
+    expect(certbot).toContain("--dns-cloudflare");
+    expect(certbot).toContain("--force-renewal");
+  });
+
+  it("reissues a DNS cert via webroot when dns is removed, without an HTTP-only step", async () => {
+    notAnEdge();
+    execa.mockResolvedValueOnce({ stdout: "dns-cloudflare" });
+    execa.mockResolvedValueOnce({}); // certbot
+    execa.mockResolvedValueOnce({}); // write
+
+    await deployProxyConfig(target, "hr", "hr.geekofia.cloud", 3000, {});
+
+    expect(execa).toHaveBeenCalledTimes(4);
+    const certbot = lastArg(2);
+    expect(certbot).toContain("--webroot");
+    expect(certbot).toContain("--force-renewal");
+  });
+
+  it("explains the token's required permission when DNS issuance fails", async () => {
+    notAnEdge();
+    execa.mockRejectedValueOnce(new Error("exit 1")); // no cert
+    execa.mockResolvedValueOnce({}); // credentials present
+    execa.mockRejectedValueOnce(new Error("Error determining zone_id")); // certbot
+
+    await expect(
+      deployProxyConfig(target, "hr", "hr.geekofia.cloud", 3000, { dns: "cloudflare" }),
+    ).rejects.toThrow(/Zone → DNS → Edit on hr.geekofia.cloud's zone/);
   });
 });

@@ -9,6 +9,11 @@ import {
   isEdgeBootstrapped,
   realIPDirectives,
 } from "./edge.js";
+import {
+  cloudflareCredentialsPath,
+  hasCloudflareCredentials,
+} from "./cloudflare.js";
+import { CLOUDFLARE_TOKEN_ENV } from "../constants.js";
 import { sshExec } from "./ssh.js";
 import type { SSHTarget, SSLConfig } from "../types.js";
 
@@ -172,28 +177,80 @@ export async function hasCertificate(
   }
 }
 
+/** certbot's name for the authenticator a config's challenge uses — what a
+ * cert's renewal config records, and so what every renewal will use. */
+export function wantedAuthenticator(ssl: SSLConfig): string {
+  return ssl.dns === "cloudflare" ? "dns-cloudflare" : "webroot";
+}
+
+/** Returns the authenticator the host's existing cert renews with (e.g.
+ * "webroot"), "" if it has a cert but no renewal config, or null if it has
+ * no cert at all. */
+export async function certificateAuthenticator(
+  target: SSHTarget,
+  host: string,
+): Promise<string | null> {
+  try {
+    const { stdout } = await sshExec(
+      target,
+      `sudo sh -c 'test -f "${certificateDir(host)}/fullchain.pem" && { sed -n "s/^authenticator = //p" "/etc/letsencrypt/renewal/${host}.conf" 2>/dev/null; true; }'`,
+    );
+    return stdout.trim();
+  } catch {
+    return null;
+  }
+}
+
 export async function issueCertificate(
   target: SSHTarget,
   host: string,
   ssl: SSLConfig,
+  opts: { replace?: boolean } = {},
 ): Promise<void> {
   const account = ssl.email
     ? `--email "${ssl.email}"`
     : "--register-unsafely-without-email";
 
+  let prepare: string[];
+  let challenge: string;
+  let hint: string;
+  if (ssl.dns === "cloudflare") {
+    if (!(await hasCloudflareCredentials(target, host))) {
+      throw new Error(
+        `no Cloudflare API token on the server for ${host} — set ${CLOUDFLARE_TOKEN_ENV} locally and re-run \`nodeploy setup\``,
+      );
+    }
+    prepare = [];
+    challenge = [
+      "--dns-cloudflare",
+      `--dns-cloudflare-credentials "${cloudflareCredentialsPath(host)}"`,
+      // Cloudflare's own default of 10s is occasionally too short for
+      // Let's Encrypt's resolvers to see the new TXT record.
+      "--dns-cloudflare-propagation-seconds 30",
+    ].join(" ");
+    hint = `make sure the Cloudflare API token has Zone → DNS → Edit on ${host}'s zone (set ${CLOUDFLARE_TOKEN_ENV} and re-run \`nodeploy setup\` to replace it)`;
+  } else {
+    prepare = [`sudo mkdir -p "${ACME_WEBROOT}"`];
+    challenge = `--webroot -w "${ACME_WEBROOT}"`;
+    hint = `make sure its DNS record points at this server and port 80 is reachable from the internet (the site is still being served over plain HTTP)`;
+  }
+
   // --cert-name pins the lineage dir to the host, so certificateDir() stays
   // correct instead of certbot picking e.g. <host>-0001. --deploy-hook is
   // saved into the cert's renewal config, so certbot's systemd timer reloads
   // nginx after every future renewal too, not just this first issuance.
+  // --force-renewal (for `replace`) reissues a still-valid cert, so its
+  // renewal config switches to this challenge.
   const remoteCommand = [
-    `sudo mkdir -p "${ACME_WEBROOT}"`,
+    ...prepare,
     [
-      "sudo certbot certonly --webroot",
-      `-w "${ACME_WEBROOT}"`,
+      "sudo certbot certonly",
+      challenge,
       `-d "${host}"`,
       `--cert-name "${host}"`,
       account,
       "--agree-tos --non-interactive",
+      ...(opts.replace ? ["--force-renewal"] : []),
       `--deploy-hook "systemctl reload nginx"`,
     ].join(" "),
   ].join(" && ");
@@ -203,7 +260,7 @@ export async function issueCertificate(
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `certbot could not issue a certificate for ${host} — make sure its DNS record points at this server and port 80 is reachable from the internet (the site is still being served over plain HTTP). (${reason})`,
+      `certbot could not issue a certificate for ${host} — ${hint}. (${reason})`,
     );
   }
 }
@@ -228,9 +285,22 @@ async function deploySite(
 ): Promise<void> {
   const onEdge = await isEdgeBootstrapped(target);
 
-  if (ssl && !(await hasCertificate(target, host))) {
-    await writeAndReload(target, service, build({ behindEdge }));
-    await issueCertificate(target, host, ssl);
+  if (ssl) {
+    const authenticator = await certificateAuthenticator(target, host);
+    // Also reissues when the existing cert renews via a different challenge
+    // than configured (e.g. just switched to DNS-01 for a LAN-only server),
+    // since renewals would otherwise keep using the old one.
+    if (authenticator !== wantedAuthenticator(ssl)) {
+      // HTTP-01 needs a port-80 config answering the challenge, and a 443
+      // block for a cert that doesn't exist yet would fail nginx -t. DNS-01
+      // needs neither, and an existing cert's config already has both.
+      if (authenticator === null && !ssl.dns) {
+        await writeAndReload(target, service, build({ behindEdge }));
+      }
+      await issueCertificate(target, host, ssl, {
+        replace: authenticator !== null,
+      });
+    }
   }
 
   if (!onEdge) {
