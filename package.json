@@ -12,6 +12,7 @@
   "engines": {
     "node": ">=18"
   },
+  "packageManager": "pnpm@10.12.4",
   "scripts": {
     "prepare": "tsup",
     "build": "tsup",
