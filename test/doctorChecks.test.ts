@@ -13,6 +13,7 @@ const {
   checkEdgeProxyProtocolPort,
   checkEdgeRouting,
   checkEdgeUpstream,
+  checkExternalAppPort,
   checkLocalEdgeRoute,
   checkNginx,
   checkNode,
@@ -319,5 +320,41 @@ describe("doctorChecks", () => {
       target,
     );
     expect(pythonResults.some((r) => r.name === "python3")).toBe(true);
+  });
+
+  it("checkExternalAppPort is ok when ss reports a listener, optional otherwise", async () => {
+    execa.mockResolvedValueOnce({
+      stdout: "LISTEN 0 4096 127.0.0.1:8090 0.0.0.0:*\n",
+    });
+    expect(await checkExternalAppPort(target, 8090)).toMatchObject({
+      ok: true,
+    });
+    expect(execa.mock.calls[0][1].at(-1)).toBe('ss -Hltn "sport = :8090"');
+
+    execa.mockResolvedValueOnce({ stdout: "" });
+    expect(await checkExternalAppPort(target, 8090)).toMatchObject({
+      ok: false,
+      optional: true,
+    });
+  });
+
+  it("runAllChecks swaps the Node/PM2/deploy path checks for a port check when runtime is external", async () => {
+    execa.mockResolvedValue({ stdout: "ok" });
+    const results = await runAllChecks(
+      makeConfig({
+        runtime: "external",
+        repo: "",
+        port: 8090,
+        proxy: { host: "api.example.com" },
+      }),
+      target,
+    );
+    const names = results.map((r) => r.name);
+    expect(names).toContain("App port");
+    expect(names).toContain("nginx");
+    expect(names).toContain("sudo");
+    for (const skipped of ["node", "npm", "pnpm", "pm2", "Deploy path"]) {
+      expect(names).not.toContain(skipped);
+    }
   });
 });

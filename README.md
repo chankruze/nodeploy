@@ -115,7 +115,8 @@ ssh:
 # deploy_path: ~/apps/inventory-api          # optional, default ~/apps/<service>
 
 # runtime: node                               # optional, default "node" — set to "python"
-                                              # to deploy a Python app instead (see below)
+                                              # to deploy a Python app instead, or "external"
+                                              # for an app another tool runs (see below)
 
 # node_version: 22                            # optional, default "22" — nvm version/alias
                                               # `nodeploy setup` installs if node is missing
@@ -139,7 +140,7 @@ ssh:
 #     server: 192.168.0.8
 ```
 
-`service`, `repo`, `server`, and `ssh.user` are required. `port` is required when `proxy` is set on a Node process app (`nestjs`/`nextjs`/`remix`/`express`/`generic`). Static apps (`vite`/`cra`) don't use `port` at all — they're served straight from disk by nginx — but still need `proxy.host` set, since that's the only way to reach a static app (there's no PM2 process, so there's no `<ip>:<port>` fallback for them).
+`service`, `repo`, `server`, and `ssh.user` are required (`repo` isn't, and isn't allowed, for `runtime: external`). `port` is required when `proxy` is set on a Node process app (`nestjs`/`nextjs`/`remix`/`express`/`generic`). Static apps (`vite`/`cra`) don't use `port` at all — they're served straight from disk by nginx — but still need `proxy.host` set, since that's the only way to reach a static app (there's no PM2 process, so there's no `<ip>:<port>` fallback for them).
 
 `proxy.host` can be anything — it's just the nginx `server_name`, resolved via a manual `/etc/hosts` entry (see below) or real DNS if the server has a public IP and domain. A natural pattern when running several apps on one server is `<app-name>.<hostname>`, e.g. `my-app.beepl-office-server-2`, or a shorter fake-TLD like `my-app.internal`/`my-app.lan`. **Avoid `.local`** — it's reserved for mDNS/Bonjour (RFC 6762), and macOS/Linux (avahi) will try multicast DNS resolution for that suffix first, which can make lookups slow or flaky, or ignore your `/etc/hosts` entry depending on `nsswitch.conf` ordering.
 
@@ -290,6 +291,45 @@ Same as with Node apps, apps bound to `127.0.0.1` work fine here since nginx and
 
 **Not yet supported:** FastAPI (or any ASGI app needing a real WSGI/ASGI server like `gunicorn`/`uvicorn` in front) — planned, but `nodeploy` currently only knows how to invoke a script directly via `pm2 start <entry> --interpreter python3`, which is enough for Flask's built-in dev server and plain stdlib servers but not for a production ASGI stack.
 
+### Fronting an app another tool deploys (Rails with Kamal, docker compose, ...)
+
+`runtime: external` is for apps nodeploy doesn't run itself — e.g. a Rails app deployed with [Kamal](https://kamal-deploy.org/) — on a server where nodeploy's nginx already owns 80/443. nodeploy then only manages what sits in front of the app: its nginx site, its certificate, and its edge routes. The app just has to listen on a port on the server:
+
+```yaml
+# easehr-api/nodeploy.yml
+service: easehr-api
+runtime: external
+server: 192.168.0.12
+ssh:
+  user: deploy
+port: 8090                 # where the app listens on the server; nginx proxies to 127.0.0.1:8090
+proxy:
+  host: api.easehr.in
+  ssl: true
+  edge:
+    server: 192.168.0.8
+```
+
+`port` and `proxy.host` are required; `repo`, `branch`, `deploy_path`, `node_version`, `entry`, `start_args`, and `start_script` are rejected, since there's nothing to check out or start. On the Kamal side, keep kamal-proxy off 80/443 and on loopback, and let nginx terminate TLS:
+
+```yaml
+# config/deploy.yml
+proxy:
+  ssl: false               # nginx does HTTPS
+  host: api.easehr.in
+  forward_headers: true    # pass on nginx's X-Forwarded-For/-Proto
+  run:                     # Kamal 2.12+; older versions: `kamal proxy boot_config set`
+    http_port: 8090
+    https_port: 8453
+    bind_ips:
+      - 127.0.0.1          # Docker-published ports bypass ufw, so don't publish on 0.0.0.0
+```
+
+- `nodeploy setup` installs nginx, certbot (and the Cloudflare plugin for `ssl.dns`), and prepares the edge — no git, Node.js, PM2, deploy key, or deploy path.
+- `nodeploy deploy` writes the edge routes, the nginx site proxying `proxy.host` to `127.0.0.1:<port>`, and issues the certificate if there isn't one — exactly as for a Node app, real client IPs included. It runs in full every time (there's no commit to compare, and it's cheap), and warns if nothing listens on `port` yet. Run it once before the app's first deploy with the other tool, then again only when `nodeploy.yml` changes.
+- `nodeploy status` reports whether the nginx site is enabled and something listens on `port`; `doctor` checks the same, skipping the Node/PM2 checks.
+- `nodeploy remove` takes down the edge routes and nginx site (and with `--purge`, the certificate), never the app itself. `restart`/`stop`/`logs` refuse, pointing you at the tool that runs the app.
+
 ### Reaching the app after deploy
 
 `nodeploy deploy` prints exactly how to reach the app, right after it finishes:
@@ -388,6 +428,7 @@ Anything else deploys as usual, and the output says why (e.g. `Deploying: new co
 - `src/lib/deployConfig.ts` — loads and validates `nodeploy.yml` (YAML via the `yaml` package), applying defaults for `branch`/`deploy_path`/`ssh.port`/`node_version`/`runtime`.
 - `src/lib/detector.ts` — pluggable, ordered rule list for Node app-type detection from a `package.json`, plus `resolveStaticDir` mapping static-output app types (`vite`/`cra`) to their build directory. Adding a new JS framework means adding a rule here.
 - `src/lib/pythonDetector.ts` — the Python equivalent: reads `requirements.txt`/`pyproject.toml` (if present) to detect `flask` vs plain `python`, and resolves the venv-creation + `pip install` command.
+- `src/lib/external.ts` — the listening-port probe `deploy`/`status`/`doctor` use for `runtime: external` apps, the only sign nodeploy has that an app another tool runs is up.
 - `src/lib/remoteApp.ts` — resolves a `RemoteApp` (the common shape `pm2.ts`/`deploy.ts` consume) by branching on `config.runtime` into the Node or Python resolution path.
 - `src/lib/pm2.ts` — all process management goes through the `PM2Adapter` interface; `SSHPM2Adapter` runs `pm2` subcommands on the server via `sshExec`, branching its `start()` command shape on `RemoteApp.runtime` (`npm run <script>` vs `--interpreter <venv-python>`).
 - `src/lib/doctorChecks.ts` — individual environment health checks, run against the remote server over SSH.

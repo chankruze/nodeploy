@@ -8,6 +8,7 @@ import {
   edgeRoutePath,
   edgeSiteLink,
 } from "./edge.js";
+import { isPortListening } from "./external.js";
 import { certificateDir } from "./nginx.js";
 import { withNvm } from "./remoteEnv.js";
 import { sshExec, sshTest } from "./ssh.js";
@@ -316,6 +317,24 @@ export async function checkEdgeUpstream(
   };
 }
 
+/** For runtime: external — another tool runs the app, so the port is the
+ * only thing to check. Optional: it's fine for it to be down before the
+ * app's first deploy with that tool. */
+export async function checkExternalAppPort(
+  target: SSHTarget,
+  port: number,
+): Promise<DoctorCheckResult> {
+  const name = "App port";
+  return (await isPortListening(target, port))
+    ? { name, ok: true, message: `something listens on port ${port}` }
+    : {
+        name,
+        ok: false,
+        message: `nothing listens on port ${port} — start the app with the tool that deploys it (e.g. \`kamal setup\`); nginx returns 502 until then`,
+        optional: true,
+      };
+}
+
 export async function checkDiskSpace(
   target: SSHTarget,
 ): Promise<DoctorCheckResult> {
@@ -402,15 +421,21 @@ export async function runAllChecks(
     return [connection];
   }
 
+  // External apps don't need Node.js, PM2, or a checkout on the server.
+  const external = config.runtime === "external";
   const checks: Promise<DoctorCheckResult | null>[] = [
-    checkNode(target),
-    checkNpm(target),
-    checkPnpm(target),
-    checkPM2(target),
+    ...(external
+      ? [checkExternalAppPort(target, config.port!)]
+      : [
+          checkNode(target),
+          checkNpm(target),
+          checkPnpm(target),
+          checkPM2(target),
+        ]),
     checkNginx(target),
     checkDiskSpace(target),
     checkMemory(target),
-    checkDeployPathWritable(target, config.deployPath),
+    ...(external ? [] : [checkDeployPathWritable(target, config.deployPath)]),
     checkPasswordlessSudo(target),
   ];
 

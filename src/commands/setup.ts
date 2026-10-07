@@ -49,47 +49,53 @@ export function registerSetupCommand(program: Command): void {
       }
       success("SSH connection OK");
 
-      info("  Checking git...");
-      try {
-        (await ensureGit(target))
-          ? success("  git installed")
-          : success("  git already present");
-      } catch (error) {
-        warn(
-          `  Could not install git — requires passwordless sudo. Install it manually, then re-run setup. (${errorMessage(error)})`,
-        );
-      }
+      // External apps are run by another tool: nodeploy only needs nginx
+      // (and certbot/the edge) on the server, not git, Node.js, or PM2.
+      const managesApp = config.runtime !== "external";
 
-      info(`  Checking Node.js (nvm, version ${config.nodeVersion})...`);
-      await ensureNode(target, config.nodeVersion)
-        ? success("  Node.js installed via nvm")
-        : success("  Node.js already present");
-
-      info("  Checking PM2...");
-      (await ensurePM2(target))
-        ? success("  PM2 installed")
-        : success("  PM2 already present");
-
-      if (config.runtime === "python") {
-        info("  Checking Python (python3, venv)...");
+      if (managesApp) {
+        info("  Checking git...");
         try {
-          (await ensurePython(target))
-            ? success("  Python3 + venv installed")
-            : success("  Python3 + venv already present");
+          (await ensureGit(target))
+            ? success("  git installed")
+            : success("  git already present");
         } catch (error) {
           warn(
-            `  Could not install python3/venv — requires passwordless sudo. Install them manually, then re-run setup. (${errorMessage(error)})`,
+            `  Could not install git — requires passwordless sudo. Install it manually, then re-run setup. (${errorMessage(error)})`,
           );
         }
-      }
 
-      try {
-        await ensurePM2Startup(target);
-        success("  PM2 set up to start on boot");
-      } catch (error) {
-        warn(
-          `  Could not register PM2 to start on boot — requires passwordless sudo. The app will still run, but won't survive a server reboot until this is fixed. (${errorMessage(error)})`,
-        );
+        info(`  Checking Node.js (nvm, version ${config.nodeVersion})...`);
+        await ensureNode(target, config.nodeVersion)
+          ? success("  Node.js installed via nvm")
+          : success("  Node.js already present");
+
+        info("  Checking PM2...");
+        (await ensurePM2(target))
+          ? success("  PM2 installed")
+          : success("  PM2 already present");
+
+        if (config.runtime === "python") {
+          info("  Checking Python (python3, venv)...");
+          try {
+            (await ensurePython(target))
+              ? success("  Python3 + venv installed")
+              : success("  Python3 + venv already present");
+          } catch (error) {
+            warn(
+              `  Could not install python3/venv — requires passwordless sudo. Install them manually, then re-run setup. (${errorMessage(error)})`,
+            );
+          }
+        }
+
+        try {
+          await ensurePM2Startup(target);
+          success("  PM2 set up to start on boot");
+        } catch (error) {
+          warn(
+            `  Could not register PM2 to start on boot — requires passwordless sudo. The app will still run, but won't survive a server reboot until this is fixed. (${errorMessage(error)})`,
+          );
+        }
       }
 
       if (config.proxy) {
@@ -184,28 +190,34 @@ export function registerSetupCommand(program: Command): void {
         }
       }
 
-      const gitHost = parseGitSSHHost(config.repo);
-      if (gitHost) {
-        info(`  Checking deploy key for ${gitHost}...`);
-        const { publicKey, created } = await ensureDeployKey(
-          target,
-          config.service,
-          gitHost,
-        );
-        if (created) {
-          success(`  Generated a new deploy key for ${config.service}`);
-        } else {
-          info(`  Deploy key for ${config.service} already exists`);
+      if (managesApp) {
+        const gitHost = parseGitSSHHost(config.repo);
+        if (gitHost) {
+          info(`  Checking deploy key for ${gitHost}...`);
+          const { publicKey, created } = await ensureDeployKey(
+            target,
+            config.service,
+            gitHost,
+          );
+          if (created) {
+            success(`  Generated a new deploy key for ${config.service}`);
+          } else {
+            info(`  Deploy key for ${config.service} already exists`);
+          }
+          info(`  Add this as a read-only Deploy key on the repo (Settings → Deploy keys):`);
+          info(`  ${publicKey}`);
         }
-        info(`  Add this as a read-only Deploy key on the repo (Settings → Deploy keys):`);
-        info(`  ${publicKey}`);
+
+        info(`  Preparing ${config.deployPath}...`);
+        await ensureDeployPath(target, config.deployPath);
+        success(`  ${config.deployPath} ready`);
       }
 
-      info(`  Preparing ${config.deployPath}...`);
-      await ensureDeployPath(target, config.deployPath);
-      success(`  ${config.deployPath} ready`);
-
       success(`${config.server} is ready for ${config.service}`);
-      info("Run `nodeploy deploy` to ship the app.");
+      info(
+        managesApp
+          ? "Run `nodeploy deploy` to ship the app."
+          : "Run `nodeploy deploy` to put nginx in front of the app.",
+      );
     });
 }

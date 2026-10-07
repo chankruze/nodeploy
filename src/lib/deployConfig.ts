@@ -99,6 +99,17 @@ function validateEdgeConfig(
   };
 }
 
+// Fields that only make sense when nodeploy checks out and runs the app.
+const NOT_FOR_EXTERNAL = [
+  "repo",
+  "branch",
+  "deploy_path",
+  "node_version",
+  "entry",
+  "start_args",
+  "start_script",
+] as const;
+
 export function validateDeployConfig(raw: unknown): DeployConfig {
   if (typeof raw !== "object" || raw === null) {
     throw new Error("nodeploy.yml must be a YAML object");
@@ -110,7 +121,19 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
     throw new Error("nodeploy.yml: \"service\" must be a non-empty string");
   }
 
-  if (typeof candidate.repo !== "string" || candidate.repo.length === 0) {
+  const external = candidate.runtime === "external";
+  if (external) {
+    for (const key of NOT_FOR_EXTERNAL) {
+      if (candidate[key] !== undefined) {
+        throw new Error(
+          `nodeploy.yml: "${key}" doesn't apply to runtime: external — the app is deployed by another tool, nodeploy only fronts it with nginx; remove it`,
+        );
+      }
+    }
+  } else if (
+    typeof candidate.repo !== "string" ||
+    candidate.repo.length === 0
+  ) {
     throw new Error("nodeploy.yml: \"repo\" must be a non-empty string");
   }
 
@@ -165,9 +188,13 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
 
   let runtime: Runtime = DEFAULT_RUNTIME;
   if (candidate.runtime !== undefined) {
-    if (candidate.runtime !== "node" && candidate.runtime !== "python") {
+    if (
+      candidate.runtime !== "node" &&
+      candidate.runtime !== "python" &&
+      candidate.runtime !== "external"
+    ) {
       throw new Error(
-        "nodeploy.yml: \"runtime\" must be \"node\" or \"python\"",
+        "nodeploy.yml: \"runtime\" must be \"node\", \"python\", or \"external\"",
       );
     }
     runtime = candidate.runtime;
@@ -227,9 +254,16 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
     }
   }
 
+  // Without both there's nothing for nodeploy to do for an external app.
+  if (external && (!proxy || typeof candidate.port !== "number")) {
+    throw new Error(
+      "nodeploy.yml: runtime: external needs \"port\" (where the app listens on the server, e.g. kamal-proxy's http_port) and \"proxy.host\"",
+    );
+  }
+
   const config: DeployConfig = {
     service: candidate.service,
-    repo: candidate.repo,
+    repo: (candidate.repo as string | undefined) ?? "",
     branch: candidate.branch ?? DEFAULT_BRANCH,
     server: candidate.server,
     ssh,

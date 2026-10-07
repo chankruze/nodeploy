@@ -13,7 +13,10 @@ export type PythonAppType = "flask" | "python";
 
 export type AppType = JSAppType | PythonAppType;
 
-export type Runtime = "node" | "python";
+/** "external" apps are run by another tool (e.g. Kamal, docker compose) on a
+ * local port; nodeploy only manages their nginx site, certificate, and edge
+ * routes. */
+export type Runtime = "node" | "python" | "external";
 
 export type PackageManagerName = "npm" | "pnpm" | "pip";
 
@@ -61,6 +64,7 @@ export interface ProxyConfig {
 /** Shape of a per-app `nodeploy.yml` file. */
 export interface DeployConfig {
   service: string;
+  /** Empty for runtime: external, which isn't deployed from a repo. */
   repo: string;
   branch: string;
   server: string;

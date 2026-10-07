@@ -19,7 +19,8 @@ import {
   prepareEdgeForHttps,
   setEdgeSniRoute,
 } from "../lib/edge.js";
-import { fail, info, success } from "../lib/logger.js";
+import { isPortListening } from "../lib/external.js";
+import { fail, info, success, warn } from "../lib/logger.js";
 import {
   deployProxyConfig,
   deployStaticProxyConfig,
@@ -120,6 +121,39 @@ async function finishEdge(config: DeployConfig): Promise<void> {
   );
 }
 
+/** runtime: external — another tool runs the app on config.port, so there's
+ * nothing to sync, build, or start, and no commit to compare against for
+ * skipping: just (re)write the edge routes and nginx site, which is cheap and
+ * idempotent (the certificate is only issued if missing). */
+async function deployExternal(
+  target: SSHTarget,
+  config: DeployConfig,
+): Promise<void> {
+  // Validation guarantees both for external apps.
+  const proxy = config.proxy!;
+  const port = config.port!;
+
+  const behindEdge = await prepareEdge(config);
+  info(`  Configuring nginx proxy for ${proxy.host} → 127.0.0.1:${port}...`);
+  await deployProxyConfig(
+    target,
+    config.service,
+    proxy.host,
+    port,
+    proxy.ssl,
+    behindEdge,
+  );
+  await finishEdge(config);
+
+  success(`${config.service}'s nginx site is live`);
+  if (!(await isPortListening(target, port))) {
+    warn(
+      `  Nothing listens on port ${port} on ${config.server} yet, so ${proxy.host} returns 502 until the app is started (e.g. \`kamal setup\`)`,
+    );
+  }
+  printAccessInfo(config);
+}
+
 export function registerDeployCommand(program: Command): void {
   program
     .command("deploy")
@@ -138,6 +172,11 @@ export function registerDeployCommand(program: Command): void {
       if (!(await sshTest(target))) {
         fail(`Could not connect to ${config.ssh.user}@${config.server}`);
         process.exitCode = 1;
+        return;
+      }
+
+      if (config.runtime === "external") {
+        await deployExternal(target, config);
         return;
       }
 

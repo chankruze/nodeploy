@@ -376,6 +376,47 @@ describe("validateDeployConfig", () => {
     ).toThrow(/entry/);
   });
 
+  describe("runtime: external", () => {
+    const external = {
+      service: "easehr-api",
+      runtime: "external",
+      server: "192.168.0.12",
+      ssh: { user: "beepl2" },
+      port: 8090,
+      proxy: { host: "api.easehr.in", ssl: true, edge: { server: "192.168.0.8" } },
+    };
+
+    it("accepts a config with no repo", () => {
+      const config = validateDeployConfig(external);
+      expect(config.runtime).toBe("external");
+      expect(config.repo).toBe("");
+      expect(config.port).toBe(8090);
+      expect(config.proxy?.host).toBe("api.easehr.in");
+      expect(config.proxy?.edge?.upstream).toBe("192.168.0.12");
+    });
+
+    it.each([
+      ["repo", "git@github.com:user/api.git"],
+      ["branch", "main"],
+      ["deploy_path", "/srv/api"],
+      ["node_version", "22"],
+      ["entry", "server.py"],
+      ["start_args", ["--x"]],
+      ["start_script", "start"],
+    ])("rejects %s, which only applies to apps nodeploy runs", (key, value) => {
+      expect(() => validateDeployConfig({ ...external, [key]: value })).toThrow(
+        new RegExp(`"${key}" doesn't apply to runtime: external`),
+      );
+    });
+
+    it("requires port and proxy.host", () => {
+      const { port: _port, ...noPort } = external;
+      expect(() => validateDeployConfig(noPort)).toThrow(/needs "port"/);
+      const { proxy: _proxy, ...noProxy } = external;
+      expect(() => validateDeployConfig(noProxy)).toThrow(/needs "port"/);
+    });
+  });
+
   it("throws when runtime is not node or python", () => {
     expect(() =>
       validateDeployConfig({

@@ -43,13 +43,18 @@ export function registerRemoveCommand(program: Command): void {
       const config = loadDeployConfig(process.cwd(), DEPLOY_CONFIG_FILENAME);
       const target = toSSHTarget(config);
       const edge = config.proxy?.edge;
+      // External apps are run by another tool: only their nginx site, edge
+      // routes, and certificate are nodeploy's to remove — never the app.
+      const external = config.runtime === "external";
 
       const scope = [
         edge && `its routes on edge ${edge.server}`,
         config.proxy && `its nginx site`,
-        "its PM2 process",
+        !external && "its PM2 process",
         options.purge &&
-          `${config.deployPath}${config.proxy?.ssl ? ", its TLS certificate," : ""} and its deploy key`,
+          (external
+            ? config.proxy?.ssl && "its TLS certificate"
+            : `${config.deployPath}${config.proxy?.ssl ? ", its TLS certificate," : ""} and its deploy key`),
       ]
         .filter(Boolean)
         .join(", ");
@@ -88,10 +93,12 @@ export function registerRemoveCommand(program: Command): void {
 
       // First, so an interrupted remove can't leave a record that makes the
       // next `deploy` think the app is already up to date.
-      await step("Clearing deploy record", async () => {
-        await clearDeployState(target, config.deployPath);
-        return "Next `nodeploy deploy` will deploy in full";
-      });
+      if (!external) {
+        await step("Clearing deploy record", async () => {
+          await clearDeployState(target, config.deployPath);
+          return "Next `nodeploy deploy` will deploy in full";
+        });
+      }
 
       // Public traffic first, so nothing reaches a half-removed app.
       if (config.proxy && edge) {
@@ -110,22 +117,26 @@ export function registerRemoveCommand(program: Command): void {
         });
       }
 
-      await step("Removing PM2 process", async () => {
-        const pm2 = createPM2Adapter(target);
-        const processes = await pm2.list();
-        if (!processes.some((p) => p.name === config.service)) {
-          return `No PM2 process named ${config.service}`;
-        }
-        await pm2.delete(config.service);
-        await pm2.save();
-        return `PM2 process ${config.service} deleted`;
-      });
+      if (!external) {
+        await step("Removing PM2 process", async () => {
+          const pm2 = createPM2Adapter(target);
+          const processes = await pm2.list();
+          if (!processes.some((p) => p.name === config.service)) {
+            return `No PM2 process named ${config.service}`;
+          }
+          await pm2.delete(config.service);
+          await pm2.save();
+          return `PM2 process ${config.service} deleted`;
+        });
+      }
 
       if (options.purge) {
-        await step(`Deleting ${config.deployPath}`, async () => {
-          await removeDeployPath(target, config.deployPath);
-          return `${config.deployPath} deleted`;
-        });
+        if (!external) {
+          await step(`Deleting ${config.deployPath}`, async () => {
+            await removeDeployPath(target, config.deployPath);
+            return `${config.deployPath} deleted`;
+          });
+        }
 
         if (config.proxy?.ssl) {
           const { host, ssl } = config.proxy;
@@ -142,10 +153,12 @@ export function registerRemoveCommand(program: Command): void {
           }
         }
 
-        await step("Deleting deploy key", async () => {
-          await removeDeployKey(target, config.service);
-          return `Deploy key for ${config.service} deleted — also remove it from the repo's Deploy keys`;
-        });
+        if (!external) {
+          await step("Deleting deploy key", async () => {
+            await removeDeployKey(target, config.service);
+            return `Deploy key for ${config.service} deleted — also remove it from the repo's Deploy keys`;
+          });
+        }
       }
 
       if (failed) {
@@ -157,7 +170,11 @@ export function registerRemoveCommand(program: Command): void {
       }
 
       success(`${config.service} removed from ${config.server}`);
-      if (!options.purge) {
+      if (external) {
+        info(
+          `The app itself is still running on port ${config.port} — stop it with the tool that deployed it (e.g. \`kamal remove\`)${!options.purge && config.proxy?.ssl ? "; kept the TLS certificate, re-run with --purge to delete it" : ""}`,
+        );
+      } else if (!options.purge) {
         info(
           `Kept ${config.deployPath}${config.proxy?.ssl ? ", the TLS certificate," : ""} and the deploy key — \`nodeploy deploy\` brings it back, or re-run with --purge to delete them too`,
         );

@@ -18,6 +18,14 @@ export function registerLogsCommand(program: Command): void {
       const config = loadDeployConfig(process.cwd(), DEPLOY_CONFIG_FILENAME);
       const target = toSSHTarget(config);
 
+      if (config.runtime === "external") {
+        fail(
+          `${config.service} is run by another tool (runtime: external), not PM2 — use that tool to stream logs for it (e.g. \`kamal app logs -f\`).`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+
       const processes = await createPM2Adapter(target).list();
       const isPM2Managed = processes.some((p) => p.name === config.service);
 

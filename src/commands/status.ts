@@ -2,6 +2,7 @@ import type { Command } from "commander";
 import { DEPLOY_CONFIG_FILENAME } from "../constants.js";
 import { loadDeployConfig, toSSHTarget } from "../lib/deployConfig.js";
 import { formatBytes, formatUptime } from "../lib/format.js";
+import { isPortListening } from "../lib/external.js";
 import { info, warn } from "../lib/logger.js";
 import { isStaticSiteEnabled } from "../lib/nginx.js";
 import { createPM2Adapter } from "../lib/pm2.js";
@@ -23,6 +24,20 @@ export function registerStatusCommand(program: Command): void {
     .action(async () => {
       const config = loadDeployConfig(process.cwd(), DEPLOY_CONFIG_FILENAME);
       const target = toSSHTarget(config);
+
+      // No PM2 process to inspect: whether nginx fronts it and whether
+      // anything answers on its port is all nodeploy can tell.
+      if (config.runtime === "external") {
+        const site = await isStaticSiteEnabled(target, config.service);
+        const listening = await isPortListening(target, config.port!);
+        const state = !site
+          ? "not deployed (no nginx site — run `nodeploy deploy`)"
+          : listening
+            ? "🟢 online (run by another tool, fronted by nginx)"
+            : `🔴 nothing listening on port ${config.port} (nginx site is up, but the app isn't)`;
+        info(`${config.service}: ${state}`);
+        return;
+      }
 
       let processes: PM2ProcessInfo[] = [];
       try {
