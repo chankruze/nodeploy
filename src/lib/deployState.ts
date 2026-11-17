@@ -23,8 +23,11 @@ export function deployStatePath(deployPath: string): string {
 }
 
 export function deployFingerprint(config: DeployConfig): string {
+  // Log rotation is applied to the PM2 daemon on every deploy, skipped or
+  // not, so changing it needn't redeploy the app.
+  const { logRotation: _logRotation, ...appConfig } = config;
   return createHash("sha256")
-    .update(JSON.stringify({ nodeployVersion, config }))
+    .update(JSON.stringify({ nodeployVersion, config: appConfig }))
     .digest("hex");
 }
 

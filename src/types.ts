@@ -61,6 +61,22 @@ export interface ProxyConfig {
   edge?: EdgeConfig;
 }
 
+/** PM2 log rotation, applied server-wide to the SSH user's PM2 daemon (every
+ * app it runs, plus pm2.log) via the pm2-logrotate module. */
+export interface LogRotationConfig {
+  /** false: nodeploy doesn't install or configure rotation on this server. */
+  enabled: boolean;
+  /** Rotate once a log reaches this size: bytes, or a number with a K/M/G
+   * suffix, e.g. "50M" (pm2-logrotate's own format). */
+  maxSize: string;
+  /** Rotated archives kept per log file; older ones are deleted. */
+  retain: number;
+  /** gzip rotated archives. */
+  compress: boolean;
+  /** Seconds between size checks. */
+  interval: number;
+}
+
 /** Shape of a per-app `nodeploy.yml` file. */
 export interface DeployConfig {
   service: string;
@@ -79,6 +95,9 @@ export interface DeployConfig {
   startArgs?: string[];
   /** Overrides the auto-detected start script (e.g. "start:lan"). Node only. */
   startScript?: string;
+  /** Only the settings set in nodeploy.yml's `log_rotation` — the rest fall
+   * back to DEFAULT_LOG_ROTATION (see resolveLogRotation). */
+  logRotation?: Partial<LogRotationConfig>;
 }
 
 /** An SSH connection target derived from a DeployConfig. */

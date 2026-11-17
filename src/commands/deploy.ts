@@ -31,6 +31,7 @@ import { resolveRemoteApp } from "../lib/remoteApp.js";
 import { withNvm } from "../lib/remoteEnv.js";
 import { resolveHomePath, sshExec, sshTest } from "../lib/ssh.js";
 import type { DeployConfig, SSHTarget } from "../types.js";
+import { applyLogRotation } from "./logs.js";
 
 interface DeployOptions {
   force?: boolean;
@@ -179,6 +180,11 @@ export function registerDeployCommand(program: Command): void {
         await deployExternal(target, config);
         return;
       }
+
+      // Before the skip check, so servers deployed before nodeploy managed
+      // log rotation get it on their next deploy, even an unchanged one.
+      // Silent when already set up; never fails the deploy.
+      await applyLogRotation(config, target, { quietIfUnchanged: true });
 
       const fingerprint = deployFingerprint(config);
       if (options.force) {

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { parse } from "yaml";
+import { isMap, parse, parseDocument } from "yaml";
+import { isValidMaxSize } from "./logRotation.js";
 import {
   DEFAULT_BRANCH,
   DEFAULT_NODE_VERSION,
@@ -10,6 +11,7 @@ import {
 import type {
   DeployConfig,
   EdgeConfig,
+  LogRotationConfig,
   Runtime,
   SSHConfig,
   SSHTarget,
@@ -99,6 +101,64 @@ function validateEdgeConfig(
   };
 }
 
+/** `log_rotation: true`/`false` is shorthand for `{ enabled: ... }`. Only
+ * the keys actually set are returned, so the server-side defaults logic can
+ * tell an explicit setting from a default. */
+export function validateLogRotation(raw: unknown): Partial<LogRotationConfig> {
+  if (typeof raw === "boolean") return { enabled: raw };
+  if (typeof raw !== "object" || raw === null) {
+    throw new Error(
+      "nodeploy.yml: \"log_rotation\" must be true, false, or an object (e.g. log_rotation: { max_size: 50M, retain: 7 })",
+    );
+  }
+
+  const r = raw as Record<string, unknown>;
+  const known = ["enabled", "max_size", "retain", "compress", "interval"];
+  for (const key of Object.keys(r)) {
+    if (!known.includes(key)) {
+      throw new Error(
+        `nodeploy.yml: unknown key "log_rotation.${key}" (expected one of: ${known.join(", ")})`,
+      );
+    }
+  }
+
+  const result: Partial<LogRotationConfig> = {};
+  for (const key of ["enabled", "compress"] as const) {
+    if (r[key] === undefined) continue;
+    if (typeof r[key] !== "boolean") {
+      throw new Error(`nodeploy.yml: "log_rotation.${key}" must be true or false`);
+    }
+    result[key] = r[key];
+  }
+
+  if (r.max_size !== undefined) {
+    // YAML reads a bare `max_size: 1048576` as a number of bytes.
+    const size = typeof r.max_size === "number" ? String(r.max_size) : r.max_size;
+    if (typeof size !== "string" || !isValidMaxSize(size)) {
+      throw new Error(
+        "nodeploy.yml: \"log_rotation.max_size\" must be a size like 50M, 500K, or 1G (at least 1K)",
+      );
+    }
+    result.maxSize = size.toUpperCase();
+  }
+
+  for (const [key, field] of [
+    ["retain", "retain"],
+    ["interval", "interval"],
+  ] as const) {
+    const value = r[key];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+      throw new Error(
+        `nodeploy.yml: "log_rotation.${key}" must be a whole number of at least 1${key === "interval" ? " (seconds)" : ""}`,
+      );
+    }
+    result[field] = value;
+  }
+
+  return result;
+}
+
 // Fields that only make sense when nodeploy checks out and runs the app.
 const NOT_FOR_EXTERNAL = [
   "repo",
@@ -108,6 +168,7 @@ const NOT_FOR_EXTERNAL = [
   "entry",
   "start_args",
   "start_script",
+  "log_rotation",
 ] as const;
 
 export function validateDeployConfig(raw: unknown): DeployConfig {
@@ -281,6 +342,10 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
     startScript: candidate.start_script as string | undefined,
   };
 
+  if (candidate.log_rotation !== undefined) {
+    config.logRotation = validateLogRotation(candidate.log_rotation);
+  }
+
   return config;
 }
 
@@ -312,4 +377,51 @@ export function toSSHTarget(config: DeployConfig): SSHTarget {
 
 export function toEdgeSSHTarget(edge: EdgeConfig): SSHTarget {
   return sshTargetFor(edge.server, edge.ssh);
+}
+
+const LOG_ROTATION_KEYS: Record<keyof LogRotationConfig, string> = {
+  enabled: "enabled",
+  maxSize: "max_size",
+  retain: "retain",
+  compress: "compress",
+  interval: "interval",
+};
+
+/** Sets `log_rotation` keys in nodeploy.yml's source, keeping its comments
+ * and layout. Expands the `log_rotation: true/false` shorthand to a map. */
+export function setLogRotationInYaml(
+  source: string,
+  changes: Partial<LogRotationConfig>,
+): string {
+  const doc = parseDocument(source);
+  const current = doc.get("log_rotation", true);
+  if (current !== undefined && current !== null && !isMap(current)) {
+    const enabled = doc.get("log_rotation");
+    doc.set("log_rotation", doc.createNode({ enabled: enabled !== false }));
+  }
+  for (const [key, value] of Object.entries(changes)) {
+    if (value === undefined) continue;
+    doc.setIn(
+      ["log_rotation", LOG_ROTATION_KEYS[key as keyof LogRotationConfig]],
+      value,
+    );
+  }
+  return doc.toString();
+}
+
+/** Applies `changes` to the nodeploy.yml in `cwd`, refusing to write a file
+ * that wouldn't load. Returns the updated config. */
+export function updateLogRotationConfig(
+  cwd: string,
+  filename: string,
+  changes: Partial<LogRotationConfig>,
+): DeployConfig {
+  const configPath = path.join(cwd, filename);
+  const updated = setLogRotationInYaml(
+    fs.readFileSync(configPath, "utf-8"),
+    changes,
+  );
+  const config = validateDeployConfig(parse(updated));
+  fs.writeFileSync(configPath, updated);
+  return config;
 }

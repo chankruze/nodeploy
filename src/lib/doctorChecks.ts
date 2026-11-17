@@ -10,6 +10,12 @@ import {
 } from "./edge.js";
 import { isPortListening } from "./external.js";
 import { certificateDir } from "./nginx.js";
+import {
+  LOGROTATE_MODULE,
+  describeSettings,
+  probeLogRotation,
+  readServerSettings,
+} from "./logRotation.js";
 import { withNvm } from "./remoteEnv.js";
 import { sshExec, sshTest } from "./ssh.js";
 import type { DeployConfig, DoctorCheckResult, SSHTarget } from "../types.js";
@@ -412,6 +418,43 @@ export async function checkPasswordlessSudo(
   }
 }
 
+/** Optional: apps run without it, but their logs grow without limit. */
+export async function checkLogRotation(
+  target: SSHTarget,
+  enabled: boolean,
+): Promise<DoctorCheckResult> {
+  const name = "Log rotation";
+  try {
+    const state = await probeLogRotation(target);
+    if (state.moduleStatus === "online") {
+      return {
+        name,
+        ok: true,
+        message: `${[LOGROTATE_MODULE, state.version].filter(Boolean).join(" ")} online: ${describeSettings(readServerSettings(state.settings))}`,
+      };
+    }
+    const problem =
+      state.installed || state.moduleStatus !== null
+        ? `${LOGROTATE_MODULE} is installed but ${state.moduleStatus ?? "not running"}`
+        : "not set up";
+    return {
+      name,
+      ok: false,
+      optional: true,
+      message: enabled
+        ? `${problem} — PM2 logs grow without limit; run \`nodeploy logs setup\``
+        : `${problem} (log_rotation.enabled is false)`,
+    };
+  } catch {
+    return {
+      name,
+      ok: false,
+      optional: true,
+      message: "could not read PM2's state to check log rotation",
+    };
+  }
+}
+
 export async function runAllChecks(
   config: DeployConfig,
   target: SSHTarget,
@@ -435,7 +478,12 @@ export async function runAllChecks(
     checkNginx(target),
     checkDiskSpace(target),
     checkMemory(target),
-    ...(external ? [] : [checkDeployPathWritable(target, config.deployPath)]),
+    ...(external
+      ? []
+      : [
+          checkDeployPathWritable(target, config.deployPath),
+          checkLogRotation(target, config.logRotation?.enabled !== false),
+        ]),
     checkPasswordlessSudo(target),
   ];
 

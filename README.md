@@ -86,6 +86,7 @@ nodeploy setup        # once per app per server: install git/Node/PM2/nginx, pre
 nodeploy deploy       # clone/pull, install, build, pm2-start on the server — run this every time
 nodeploy status       # show the PM2 status of the deployed service
 nodeploy logs         # stream PM2 logs
+nodeploy logs usage   # disk used by PM2 logs on the server, per app (see "Log rotation")
 nodeploy restart
 nodeploy stop
 nodeploy remove       # take the app off its server (and edge); --purge to delete its files too
@@ -330,6 +331,61 @@ proxy:
 - `nodeploy status` reports whether the nginx site is enabled and something listens on `port`; `doctor` checks the same, skipping the Node/PM2 checks.
 - `nodeploy remove` takes down the edge routes and nginx site (and with `--purge`, the certificate), never the app itself. `restart`/`stop`/`logs` refuse, pointing you at the tool that runs the app.
 
+### Log rotation
+
+PM2 never trims its own logs, so a chatty app (or a crash loop writing to stderr) can fill the disk. nodeploy sets up rotation on every server it runs PM2 apps on. You don't have to configure anything:
+
+| Setting | Default | `log_rotation` key |
+|---|---|---|
+| Rotate a log once it reaches | 50M | `max_size` (`500K`, `50M`, `1G`, or bytes) |
+| Rotated archives kept per log file | 7 | `retain` |
+| gzip archives | yes | `compress` |
+| Size check every | 30 seconds | `interval` |
+| nodeploy manages rotation | yes | `enabled` |
+
+```yaml
+log_rotation:        # all optional; `log_rotation: false` = enabled: false
+  max_size: 100M
+  retain: 10
+```
+
+**How it works.** nodeploy installs the [`pm2-logrotate`](https://github.com/pm2-hive/pm2-logrotate) module (pinned to 3.0.1) into the SSH user's PM2 daemon and configures it. The module runs inside that daemon, so:
+
+- it uses the daemon owner's permissions and home, whether that's root or not;
+- it comes back with the daemon after a reboot or `pm2 kill`;
+- it needs no cron job, systemd unit, or sudo.
+
+It checks every app's out and err logs (cluster instances included), plus `pm2.log` and modules' own logs. Each log over `max_size` is copied to `<name>__<date>.log.gz` and then truncated; apps aren't restarted. Only the newest `retain` archives per log are kept. Independently of size, the module also rotates every log daily at midnight, which is its default.
+
+Rotation belongs to the **PM2 daemon, not the app**: every app on the same server and `ssh.user` shares one config. If several apps' `nodeploy.yml` files set different `log_rotation` values, the last `setup`/`deploy` wins, so keep them consistent. A PM2 daemon run by a *different* user (e.g. root's, when `ssh.user` isn't root) has its own modules. `logs status`, `setup`, and `doctor` warn when they spot one.
+
+**Existing servers** get rotation without a redeploy. Run `nodeploy logs setup` once per server. `nodeploy setup` and every `nodeploy deploy` also apply it (silently when nothing changed, and even when the deploy itself is skipped). Setup is idempotent:
+
+- the module is installed once (re-running only re-checks it);
+- its config is rewritten only if it differs;
+- only the module is restarted, never an app.
+
+Settings are written *before* the module is installed. That way its first pass never runs with the module's own defaults (10M, uncompressed), which would make full-size copies of every big log already on the disk.
+
+Setup itself never deletes or truncates a log. Logs already over `max_size` are archived (compressed, not deleted) on the module's first pass; `setup` lists them and warns if the disk looks too full to hold the archives. If the server already ran `pm2-logrotate` with a higher `retain`, nodeploy keeps it rather than pruning old archives; set `retain` explicitly to lower it. Installs older than 3.0.1, which ignore `compress`, are upgraded.
+
+```sh
+nodeploy logs status          # installed? running? settings vs nodeploy.yml, total size, warnings
+nodeploy logs config          # show settings (nodeploy.yml + defaults, and what the server runs)
+nodeploy logs config --max-size 100M --retain 10 --no-compress   # update nodeploy.yml and apply it
+nodeploy logs setup           # install/apply now
+nodeploy logs usage           # total size, per-app live/archived sizes, largest files, disk free
+nodeploy logs rotate [--all]  # rotate this app's logs (or every app's + pm2.log) right now
+```
+
+`logs usage`/`logs status` warn about:
+
+- a live log over twice `max_size` (rotation isn't keeping up, or isn't running);
+- logs taking 10%+ of their filesystem;
+- a filesystem that's 90%+ full.
+
+`logs rotate` doesn't copy and truncate. It renames each log and has PM2 reopen it (`pm2 reloadLogs`), so even a busy app loses no lines and nothing restarts. Its archives use the module's naming, so the same `retain` limit prunes them. A missing log or a permission error skips that one file. If `reloadLogs` fails, the logs are put back as they were. With `log_rotation.enabled: false`, nodeploy neither installs nor changes rotation; a module that's already installed keeps running until you `pm2 uninstall pm2-logrotate` on the server.
+
 ### Reaching the app after deploy
 
 `nodeploy deploy` prints exactly how to reach the app, right after it finishes:
@@ -387,7 +443,8 @@ Run once per app per server, before the first deploy (safe to re-run — every s
 4. Installs PM2 globally via `npm install -g pm2` if missing (also no sudo — nvm's npm installs into the nvm-managed Node's own directory), then tries to register it with `pm2 startup systemd` so PM2-managed apps survive a server reboot. **The `pm2 startup` step requires passwordless sudo**; if unavailable, warns and continues — the app still runs, it just won't come back automatically after a reboot until you fix sudo access and re-run `setup`.
 5. If `runtime: python` is set, installs `python3`/`python3-venv`/`python3-pip` via `apt` if the venv module isn't already importable. **Requires passwordless sudo**; warns and continues if unavailable.
 6. If `proxy` is configured in `nodeploy.yml`, installs and starts `nginx` via `apt` — plus `certbot` if `proxy.ssl` is set. With `proxy.edge`, also installs nginx on the edge and (for `ssl` apps) sets up its SNI router — see [Behind an edge proxy](#behind-an-edge-proxy-one-public-ip-many-servers). **Requires passwordless sudo**; warns and continues if unavailable.
-7. Creates `deploy_path` if it doesn't exist yet.
+7. Sets up [log rotation](#log-rotation) for the server's PM2 (no sudo), and points out any logs already over `max_size`.
+8. Creates `deploy_path` if it doesn't exist yet.
 
 This targets Ubuntu/Debian (`apt`, `systemd`) — tested against Ubuntu LTS. Other distros aren't supported by `setup` yet; install prerequisites manually and `nodeploy doctor`/`deploy` will still work.
 
@@ -396,13 +453,14 @@ This targets Ubuntu/Debian (`apt`, `systemd`) — tested against Ubuntu LTS. Oth
 Run every time you ship a change (after `setup` has run at least once):
 
 1. Checks the SSH connection to `server`.
-2. **Skips the deploy if nothing would change** (unless `--force`): see [Skipping unchanged deploys](#skipping-unchanged-deploys).
-3. Clones the repo into `deploy_path` if it isn't there yet, otherwise fetches and hard-resets to `origin/<branch>`.
-4. For `runtime: node`, reads the remote `package.json` to detect the app type and resolve install/build/start commands. For `runtime: python`, checks for `requirements.txt`/`pyproject.toml` to resolve the install step and detect `flask` vs plain `python`.
-5. Installs dependencies and runs the build step (if any) on the server. For Python, this creates `deploy_path/.venv` (always, even with nothing to install) and `pip install`s into it if a manifest was found.
-6. For static app types (`vite`/`cra`), points nginx directly at the build output directory instead of starting anything under PM2 — no `port` involved. For every other type, starts (or restarts, if already running) the app under PM2 as `service` — Node apps via `pm2 start npm -- run <script>`, Python apps via `pm2 start <entry> --interpreter <venv>/bin/python3` — (appending `start_args`, if set, and exporting `PORT`, if `port` is set on a Python app), then `pm2 save`s the process list so it's restored on reboot.
-7. With `proxy.edge`, writes this app's routes on the edge first (port-80 forward, plus the 443 SNI route for `ssl` apps), so ACME challenges already reach the app's server when its certificate is issued. This happens before step 6's nginx config for static apps too.
-8. If `proxy` is configured (process apps only — static apps always write their nginx config in step 6), writes an nginx server block proxying `proxy.host` to `port`, symlinks it into `sites-enabled`, and reloads nginx. With `proxy.ssl`, this (and step 6 for static apps) first issues a Let's Encrypt certificate if the host doesn't have one yet — see [HTTPS and one subdomain per app](#https-and-one-subdomain-per-app).
+2. Makes sure [log rotation](#log-rotation) is set up for the server's PM2 (quiet when it already is, never fails the deploy, and `log_rotation` changes alone don't count as a change to deploy).
+3. **Skips the deploy if nothing would change** (unless `--force`): see [Skipping unchanged deploys](#skipping-unchanged-deploys).
+4. Clones the repo into `deploy_path` if it isn't there yet, otherwise fetches and hard-resets to `origin/<branch>`.
+5. For `runtime: node`, reads the remote `package.json` to detect the app type and resolve install/build/start commands. For `runtime: python`, checks for `requirements.txt`/`pyproject.toml` to resolve the install step and detect `flask` vs plain `python`.
+6. Installs dependencies and runs the build step (if any) on the server. For Python, this creates `deploy_path/.venv` (always, even with nothing to install) and `pip install`s into it if a manifest was found.
+7. For static app types (`vite`/`cra`), points nginx directly at the build output directory instead of starting anything under PM2 — no `port` involved. For every other type, starts (or restarts, if already running) the app under PM2 as `service` — Node apps via `pm2 start npm -- run <script>`, Python apps via `pm2 start <entry> --interpreter <venv>/bin/python3` — (appending `start_args`, if set, and exporting `PORT`, if `port` is set on a Python app), then `pm2 save`s the process list so it's restored on reboot.
+8. With `proxy.edge`, writes this app's routes on the edge first (port-80 forward, plus the 443 SNI route for `ssl` apps), so ACME challenges already reach the app's server when its certificate is issued. This happens before step 7's nginx config for static apps too.
+9. If `proxy` is configured (process apps only — static apps always write their nginx config in step 7), writes an nginx server block proxying `proxy.host` to `port`, symlinks it into `sites-enabled`, and reloads nginx. With `proxy.ssl`, this (and step 7 for static apps) first issues a Let's Encrypt certificate if the host doesn't have one yet — see [HTTPS and one subdomain per app](#https-and-one-subdomain-per-app).
 
 ### Skipping unchanged deploys
 
@@ -431,6 +489,7 @@ Anything else deploys as usual, and the output says why (e.g. `Deploying: new co
 - `src/lib/external.ts` — the listening-port probe `deploy`/`status`/`doctor` use for `runtime: external` apps, the only sign nodeploy has that an app another tool runs is up.
 - `src/lib/remoteApp.ts` — resolves a `RemoteApp` (the common shape `pm2.ts`/`deploy.ts` consume) by branching on `config.runtime` into the Node or Python resolution path.
 - `src/lib/pm2.ts` — all process management goes through the `PM2Adapter` interface; `SSHPM2Adapter` runs `pm2` subcommands on the server via `sshExec`, branching its `start()` command shape on `RemoteApp.runtime` (`npm run <script>` vs `--interpreter <venv-python>`).
+- `src/lib/logRotation.ts` — PM2 log rotation: reads the daemon's state in one round trip, plans the minimal change (install/upgrade/restart the pinned `pm2-logrotate`, or nothing), writes its settings atomically into `module_conf.json`, measures log disk usage, and generates the script behind `logs rotate`.
 - `src/lib/doctorChecks.ts` — individual environment health checks, run against the remote server over SSH.
 
 Out of scope for this phase (left as clean extension points, not built): Docker, FastAPI/ASGI (`gunicorn`/`uvicorn` in front) support, env/secrets injection, multi-server roles or accessories (databases, etc.), wildcard certificates and DNS providers other than Cloudflare, automatic DNS/hosts-file management, non-Debian/Ubuntu `setup` support, and a rollback command.
@@ -442,7 +501,14 @@ pnpm test        # vitest
 pnpm typecheck   # tsc --noEmit
 ```
 
-Unit-tested with mocked `execa` calls: Node app-type detection, Python app-type detection (`flask`/`python` from `requirements.txt`/`pyproject.toml`), package manager detection, `nodeploy.yml` loading/validation (including `runtime`/`entry`), SSH argument building, the git clone/pull command, the nginx server-block template and remote deploy command, the PM2 adapter (argument shapes for both Node and Python start commands, status mapping, mocked success/failure), server provisioning steps (git/nvm-Node/PM2/Python/nginx install checks), and doctor checks.
+Unit-tested with mocked `execa` calls: Node app-type detection, Python app-type detection (`flask`/`python` from `requirements.txt`/`pyproject.toml`), package manager detection, `nodeploy.yml` loading/validation (including `runtime`/`entry`), SSH argument building, the git clone/pull command, the nginx server-block template and remote deploy command, the PM2 adapter (argument shapes for both Node and Python start commands, status mapping, mocked success/failure), server provisioning steps (git/nvm-Node/PM2/Python/nginx install checks), doctor checks, and log rotation:
+- the install/upgrade/restart plan and its idempotence;
+- settings written before install;
+- retention-preserving migration;
+- `log_rotation` validation and in-place `nodeploy.yml` edits;
+- disk-usage parsing and warnings.
+
+The `logs rotate` script runs for real under `sh` against temp files with a stub `pm2`. Those tests cover compression, retention, missing/empty/unwritable files, and a failed `reloadLogs`. They also check that a process writing continuously during rotation loses no lines.
 
 **Not unit tested** (requires a real server): actual `apt`/nvm/PM2 installs, `pm2 start` process lifecycle, real `git`/`npm`/`pnpm install`/build execution, nginx reload behavior, and full command flows end-to-end. Verify these manually against a toy app and a real VPS:
 

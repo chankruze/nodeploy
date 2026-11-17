@@ -25,6 +25,7 @@ import {
   ensurePython,
 } from "../lib/serverSetup.js";
 import { sshTest } from "../lib/ssh.js";
+import { applyLogRotation } from "./logs.js";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -34,7 +35,7 @@ export function registerSetupCommand(program: Command): void {
   program
     .command("setup")
     .description(
-      "Provision the server for this app once: git, Node.js, PM2, Python (if runtime: python), nginx (if proxy is configured), certbot (if proxy.ssl is set), the edge proxy (if proxy.edge is set), and a deploy key",
+      "Provision the server for this app once: git, Node.js, PM2 (with log rotation), Python (if runtime: python), nginx (if proxy is configured), certbot (if proxy.ssl is set), the edge proxy (if proxy.edge is set), and a deploy key",
     )
     .action(async () => {
       const config = loadDeployConfig(process.cwd(), DEPLOY_CONFIG_FILENAME);
@@ -96,6 +97,9 @@ export function registerSetupCommand(program: Command): void {
             `  Could not register PM2 to start on boot — requires passwordless sudo. The app will still run, but won't survive a server reboot until this is fixed. (${errorMessage(error)})`,
           );
         }
+
+        info("  Checking PM2 log rotation...");
+        await applyLogRotation(config, target, { checkExistingLogs: true });
       }
 
       if (config.proxy) {
