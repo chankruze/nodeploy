@@ -137,3 +137,54 @@ describe("updateLogRotationConfig", () => {
     expect(loadDeployConfig(dir, "nodeploy.yml").logRotation).toEqual({ interval: 60 });
   });
 });
+
+describe("backup in nodeploy.yml", () => {
+  it("applies defaults: daily, keep 14", () => {
+    expect(validateDeployConfig({ ...base, backup: { paths: ["data/app.db", "uploads/"] } }).backup).toEqual({
+      paths: ["data/app.db", "uploads"],
+      schedule: "daily",
+      keep: 14,
+    });
+  });
+
+  it("accepts hourly, off, and cron expressions", () => {
+    for (const schedule of ["hourly", "off", "30 1 * * *", "*/15 * * * 1-5"]) {
+      expect(validateDeployConfig({ ...base, backup: { paths: ["d"], schedule } }).backup?.schedule).toBe(schedule);
+    }
+  });
+
+  it.each([
+    [{}, /backup.paths/],
+    [{ paths: [] }, /backup.paths/],
+    [{ paths: ["/etc/passwd"] }, /inside deploy_path/],
+    [{ paths: ["../other-app/data"] }, /inside deploy_path/],
+    [{ paths: ["~/x"] }, /inside deploy_path/],
+    [{ paths: ["d"], schedule: "weekly" }, /backup.schedule/],
+    [{ paths: ["d"], schedule: "1 2 3" }, /backup.schedule/],
+    [{ paths: ["d"], keep: 0 }, /backup.keep/],
+    [{ paths: ["d"], retain: 3 }, /unknown key "backup.retain"/],
+    [["data"], /must be an object/],
+  ])("rejects %j", (backup, message) => {
+    expect(() => validateDeployConfig({ ...base, backup })).toThrow(message);
+  });
+
+  it("is rejected for runtime: external", () => {
+    expect(() =>
+      validateDeployConfig({
+        service: "api",
+        server: "192.168.0.12",
+        ssh: { user: "deploy" },
+        runtime: "external",
+        port: 8090,
+        proxy: { host: "api.example.com" },
+        backup: { paths: ["d"] },
+      }),
+    ).toThrow(/"backup" doesn't apply to runtime: external/);
+  });
+
+  it("doesn't change the deploy fingerprint", () => {
+    expect(deployFingerprint(validateDeployConfig({ ...base, backup: { paths: ["d"] } }))).toBe(
+      deployFingerprint(validateDeployConfig(base)),
+    );
+  });
+});

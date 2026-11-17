@@ -1,6 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isMap, parse, parseDocument } from "yaml";
+import {
+  DEFAULT_BACKUP_KEEP,
+  DEFAULT_BACKUP_SCHEDULE,
+  isValidSchedule,
+} from "./backup.js";
 import { isValidMaxSize } from "./logRotation.js";
 import {
   DEFAULT_BRANCH,
@@ -9,6 +14,7 @@ import {
   DEFAULT_SSH_PORT,
 } from "../constants.js";
 import type {
+  BackupConfig,
   DeployConfig,
   EdgeConfig,
   LogRotationConfig,
@@ -159,6 +165,61 @@ export function validateLogRotation(raw: unknown): Partial<LogRotationConfig> {
   return result;
 }
 
+export function validateBackup(raw: unknown): BackupConfig {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error(
+      "nodeploy.yml: \"backup\" must be an object (e.g. backup: { paths: [data/app.db] })",
+    );
+  }
+  const r = raw as Record<string, unknown>;
+  const known = ["paths", "schedule", "keep"];
+  for (const key of Object.keys(r)) {
+    if (!known.includes(key)) {
+      throw new Error(
+        `nodeploy.yml: unknown key "backup.${key}" (expected one of: ${known.join(", ")})`,
+      );
+    }
+  }
+
+  if (
+    !Array.isArray(r.paths) ||
+    r.paths.length === 0 ||
+    !r.paths.every((p) => typeof p === "string" && p.trim().length > 0)
+  ) {
+    throw new Error(
+      "nodeploy.yml: \"backup.paths\" must be a non-empty list of files or directories, relative to deploy_path (e.g. [data/app.db, uploads])",
+    );
+  }
+  const paths = (r.paths as string[]).map((p) => p.trim().replace(/\/+$/, ""));
+  for (const p of paths) {
+    if (p.startsWith("/") || p.startsWith("~") || p.startsWith("$") || p.split("/").includes("..") || p === ".") {
+      throw new Error(
+        `nodeploy.yml: "backup.paths" entry "${p}" must be a path inside deploy_path, e.g. data/app.db (no absolute paths, "~", or "..")`,
+      );
+    }
+  }
+
+  let schedule = DEFAULT_BACKUP_SCHEDULE;
+  if (r.schedule !== undefined) {
+    if (typeof r.schedule !== "string" || !isValidSchedule(r.schedule)) {
+      throw new Error(
+        "nodeploy.yml: \"backup.schedule\" must be daily, hourly, off, or a cron expression like \"30 1 * * *\"",
+      );
+    }
+    schedule = r.schedule.trim();
+  }
+
+  let keep = DEFAULT_BACKUP_KEEP;
+  if (r.keep !== undefined) {
+    if (typeof r.keep !== "number" || !Number.isInteger(r.keep) || r.keep < 1) {
+      throw new Error("nodeploy.yml: \"backup.keep\" must be a whole number of at least 1");
+    }
+    keep = r.keep;
+  }
+
+  return { paths: [...new Set(paths)], schedule, keep };
+}
+
 // Fields that only make sense when nodeploy checks out and runs the app.
 const NOT_FOR_EXTERNAL = [
   "repo",
@@ -169,6 +230,7 @@ const NOT_FOR_EXTERNAL = [
   "start_args",
   "start_script",
   "log_rotation",
+  "backup",
 ] as const;
 
 export function validateDeployConfig(raw: unknown): DeployConfig {
@@ -344,6 +406,9 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
 
   if (candidate.log_rotation !== undefined) {
     config.logRotation = validateLogRotation(candidate.log_rotation);
+  }
+  if (candidate.backup !== undefined) {
+    config.backup = validateBackup(candidate.backup);
   }
 
   return config;

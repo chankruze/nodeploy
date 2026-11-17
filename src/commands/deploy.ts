@@ -38,6 +38,7 @@ import {
 } from "../lib/serverChanges.js";
 import { resolveHomePath, sshExec, sshTest } from "../lib/ssh.js";
 import type { DeployConfig, SSHTarget } from "../types.js";
+import { applyBackupSetup, backupNow, reportBackup } from "./backup.js";
 import { applyLogRotation } from "./logs.js";
 
 interface DeployOptions {
@@ -207,6 +208,8 @@ export function registerDeployCommand(program: Command): void {
       // log rotation get it on their next deploy, even an unchanged one.
       // Silent when already set up; never fails the deploy.
       await applyLogRotation(config, target, { quietIfUnchanged: true });
+      // Keeps the backup script and schedule in step with nodeploy.yml.
+      await applyBackupSetup(config, target, { quiet: true });
 
       const fingerprint = deployFingerprint(config);
       if (options.force) {
@@ -238,6 +241,19 @@ export function registerDeployCommand(program: Command): void {
         deployPath: config.deployPath,
         service: config.service,
       };
+
+      // A snapshot of the app's data before anything changes, so any deploy
+      // can be rolled back with `nodeploy backup restore`. No backup, no
+      // deploy: going ahead without one is what the backup is for.
+      if (config.backup) {
+        info("  Backing up the app's data...");
+        const result = await backupNow(config, target, "pre-deploy");
+        if (!reportBackup(result, "  ")) {
+          fail(`Not deploying ${config.service} without a backup of its data — fix the error above (\`nodeploy backup now\` to retry).`);
+          process.exitCode = 1;
+          return;
+        }
+      }
 
       // The sync is a `git reset --hard`, which would silently roll back
       // anything changed on the server — e.g. a database committed to the

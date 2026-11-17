@@ -25,6 +25,7 @@ import {
   ensurePython,
 } from "../lib/serverSetup.js";
 import { sshTest } from "../lib/ssh.js";
+import { applyBackupSetup } from "./backup.js";
 import { applyLogRotation } from "./logs.js";
 
 function errorMessage(error: unknown): string {
@@ -215,6 +216,11 @@ export function registerSetupCommand(program: Command): void {
         info(`  Preparing ${config.deployPath}...`);
         await ensureDeployPath(target, config.deployPath);
         success(`  ${config.deployPath} ready`);
+
+        if (config.backup) {
+          info("  Setting up backups...");
+          await applyBackupSetup(config, target);
+        }
       }
 
       success(`${config.server} is ready for ${config.service}`);

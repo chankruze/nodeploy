@@ -88,6 +88,7 @@ nodeploy status       # show the PM2 status of the deployed service
 nodeploy logs         # stream PM2 logs
 nodeploy logs usage   # disk used by PM2 logs on the server, per app (see "Log rotation")
 nodeploy pull-files   # copy files the app changed on the server into this repo (see "the deploy guard")
+nodeploy backup now   # back up the app's data (see "Backups"); also scheduled and before every deploy
 nodeploy restart
 nodeploy stop
 nodeploy remove       # take the app off its server (and edge); --purge to delete its files too
@@ -387,6 +388,48 @@ nodeploy logs rotate [--all]  # rotate this app's logs (or every app's + pm2.log
 
 `logs rotate` doesn't copy and truncate. It renames each log and has PM2 reopen it (`pm2 reloadLogs`), so even a busy app loses no lines and nothing restarts. Its archives use the module's naming, so the same `retain` limit prunes them. A missing log or a permission error skips that one file. If `reloadLogs` fails, the logs are put back as they were. With `log_rotation.enabled: false`, nodeploy neither installs nor changes rotation; a module that's already installed keeps running until you `pm2 uninstall pm2-logrotate` on the server.
 
+### Backups
+
+List the app's data in `nodeploy.yml` and nodeploy backs it up on the server:
+- on a schedule;
+- before every deploy (no backup, no deploy);
+- whenever you ask.
+
+```yaml
+backup:
+  paths: [data/app.db, uploads]   # files or directories, relative to deploy_path
+  schedule: daily                 # daily (02:xx server time) | hourly | off | a cron expression
+  keep: 14                        # older backups are deleted
+```
+
+nodeploy installs one self-contained script per app at `~/.nodeploy/backup-<service>.sh`, plus a line in the SSH user's crontab, so no sudo is needed. The same script serves every trigger, and it needs neither nodeploy nor Node on the server. Each run writes `~/.nodeploy/backups/<service>/<time>_<reason>.tar.gz`, outside the checkout, so `git reset` and `remove --purge` never touch it. The archive contains:
+- the files;
+- a `MANIFEST` (paths, reason, deployed commit);
+- `SHA256SUMS`.
+
+Details that matter for live data:
+- **SQLite databases** are snapshotted with `sqlite3 .backup`, which is consistent even while the app is writing and includes writes still in the WAL. Each snapshot is then turned into a single self-contained file. Install `sqlite3` on the server, or you'll get a warning that the copy may be inconsistent.
+- **Archives appear only once complete:** each is written under a temporary name and renamed.
+- **No overlapping runs:** a lock stops a scheduled run and a manual one from running together, and a lock left by a run that died is taken over.
+- **Missing paths are reported, not fatal.**
+
+```sh
+nodeploy backup now                 # back up right now
+nodeploy backup list                # backups on the server, newest first, and the schedule
+nodeploy backup restore [name]      # "latest" by default; asks you to type the service name (--yes to skip)
+nodeploy backup setup               # (re)install the script and schedule; setup and deploy do this too
+```
+
+`restore` does this:
+1. Backs up the current data first, so the restore itself can be undone.
+2. Stops the app.
+3. Checks every file's checksum before touching anything; a damaged archive is refused.
+4. Swaps each path into place with a rename.
+5. Drops a restored database's stale `-wal`/`-shm` files.
+6. Starts the app again.
+
+At the end it prints the command that undoes the restore.
+
 ### Reaching the app after deploy
 
 `nodeploy deploy` prints exactly how to reach the app, right after it finishes:
@@ -521,6 +564,7 @@ Anything else deploys as usual, and the output says why (e.g. `Deploying: new co
 - `src/lib/pm2.ts` — all process management goes through the `PM2Adapter` interface; `SSHPM2Adapter` runs `pm2` subcommands on the server via `sshExec`, branching its `start()` command shape on `RemoteApp.runtime` (`npm run <script>` vs `--interpreter <venv-python>`).
 - `src/lib/logRotation.ts` — PM2 log rotation: reads the daemon's state in one round trip, plans the minimal change (install/upgrade/restart the pinned `pm2-logrotate`, or nothing), writes its settings atomically into `module_conf.json`, measures log disk usage, and generates the script behind `logs rotate`.
 - `src/lib/serverChanges.ts` — the deploy guard: asks the server which files `git reset --hard` would overwrite or delete, backs them up, and syncs while keeping them (`--keep-server-files`); `nodeploy pull-files` uses it to copy them into the local repo.
+- `src/lib/backup.ts` — backups: generates the per-app backup and restore scripts (SQLite-consistent snapshots, checksums, locking, retention), installs the script and its crontab line, and lists archives.
 - `src/lib/doctorChecks.ts` — individual environment health checks, run against the remote server over SSH.
 
 Out of scope for this phase (left as clean extension points, not built): Docker, FastAPI/ASGI (`gunicorn`/`uvicorn` in front) support, env/secrets injection, multi-server roles or accessories (databases, etc.), wildcard certificates and DNS providers other than Cloudflare, automatic DNS/hosts-file management, non-Debian/Ubuntu `setup` support, and a rollback command.

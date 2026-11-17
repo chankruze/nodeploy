@@ -77,6 +77,18 @@ export interface LogRotationConfig {
   interval: number;
 }
 
+/** Backups of an app's data, taken on the server by a script nodeploy
+ * installs there: on a schedule, on demand, and before each deploy. */
+export interface BackupConfig {
+  /** Files or directories to back up, relative to deploy_path. */
+  paths: string[];
+  /** "daily" (02:xx server time), "hourly", "off", or a 5-field cron
+   * expression. */
+  schedule: string;
+  /** Backups to keep; older ones are deleted. */
+  keep: number;
+}
+
 /** Shape of a per-app `nodeploy.yml` file. */
 export interface DeployConfig {
   service: string;
@@ -98,6 +110,7 @@ export interface DeployConfig {
   /** Only the settings set in nodeploy.yml's `log_rotation` — the rest fall
    * back to DEFAULT_LOG_ROTATION (see resolveLogRotation). */
   logRotation?: Partial<LogRotationConfig>;
+  backup?: BackupConfig;
 }
 
 /** An SSH connection target derived from a DeployConfig. */
