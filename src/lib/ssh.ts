@@ -31,6 +31,18 @@ export async function sshExec(
   return { stdout: result.stdout ?? "" };
 }
 
+/** A remote file's exact bytes (sshExec's stdout is text, which would mangle
+ * a binary file such as a SQLite database). */
+export async function sshReadFile(
+  target: SSHTarget,
+  remotePath: string,
+): Promise<Uint8Array> {
+  const result = await execa("ssh", [...buildSSHArgs(target), `cat -- ${remotePath}`], {
+    encoding: "buffer",
+  });
+  return result.stdout;
+}
+
 export async function sshTest(target: SSHTarget): Promise<boolean> {
   try {
     await sshExec(target, "true");

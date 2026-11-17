@@ -87,6 +87,7 @@ nodeploy deploy       # clone/pull, install, build, pm2-start on the server — 
 nodeploy status       # show the PM2 status of the deployed service
 nodeploy logs         # stream PM2 logs
 nodeploy logs usage   # disk used by PM2 logs on the server, per app (see "Log rotation")
+nodeploy pull-files   # copy files the app changed on the server into this repo (see "the deploy guard")
 nodeploy restart
 nodeploy stop
 nodeploy remove       # take the app off its server (and edge); --purge to delete its files too
@@ -454,13 +455,42 @@ Run every time you ship a change (after `setup` has run at least once):
 
 1. Checks the SSH connection to `server`.
 2. Makes sure [log rotation](#log-rotation) is set up for the server's PM2 (quiet when it already is, never fails the deploy, and `log_rotation` changes alone don't count as a change to deploy).
-3. **Skips the deploy if nothing would change** (unless `--force`): see [Skipping unchanged deploys](#skipping-unchanged-deploys).
+3. **Skips the deploy if nothing would change** (unless `--force`): see [Skipping unchanged deploys](#skipping-unchanged-deploys). Otherwise, **stops if the sync would overwrite or delete files changed on the server**, unless you pass `--keep-server-files` or `--overwrite-server-files`: see [the deploy guard](#files-changed-on-the-server-the-deploy-guard).
 4. Clones the repo into `deploy_path` if it isn't there yet, otherwise fetches and hard-resets to `origin/<branch>`.
 5. For `runtime: node`, reads the remote `package.json` to detect the app type and resolve install/build/start commands. For `runtime: python`, checks for `requirements.txt`/`pyproject.toml` to resolve the install step and detect `flask` vs plain `python`.
 6. Installs dependencies and runs the build step (if any) on the server. For Python, this creates `deploy_path/.venv` (always, even with nothing to install) and `pip install`s into it if a manifest was found.
 7. For static app types (`vite`/`cra`), points nginx directly at the build output directory instead of starting anything under PM2 — no `port` involved. For every other type, starts (or restarts, if already running) the app under PM2 as `service` — Node apps via `pm2 start npm -- run <script>`, Python apps via `pm2 start <entry> --interpreter <venv>/bin/python3` — (appending `start_args`, if set, and exporting `PORT`, if `port` is set on a Python app), then `pm2 save`s the process list so it's restored on reboot.
 8. With `proxy.edge`, writes this app's routes on the edge first (port-80 forward, plus the 443 SNI route for `ssl` apps), so ACME challenges already reach the app's server when its certificate is issued. This happens before step 7's nginx config for static apps too.
 9. If `proxy` is configured (process apps only — static apps always write their nginx config in step 7), writes an nginx server block proxying `proxy.host` to `port`, symlinks it into `sites-enabled`, and reloads nginx. With `proxy.ssl`, this (and step 7 for static apps) first issues a Let's Encrypt certificate if the host doesn't have one yet — see [HTTPS and one subdomain per app](#https-and-one-subdomain-per-app).
+
+### Files changed on the server (the deploy guard)
+
+`deploy` syncs the checkout with `git reset --hard`, which throws away anything changed on the server since the last deploy. For code that's intended. For app data committed to the repo, it isn't: a SQLite database, a JSON store, or uploads would silently roll back to their committed versions. So before syncing, `deploy` asks the server which files the reset would actually change, and **stops without touching anything** if there are any:
+
+```
+✗ Deploying arap would change 1 file(s) on the server that differ from git — stopped, nothing was touched:
+    data/brothers_project_accounts.db  changed on the server; git's version is different — it would be overwritten
+```
+
+It catches three cases:
+- **overwritten:** a tracked file changed on the server and git's version differs;
+- **deleted:** the commit being deployed no longer has the file;
+- **untracked clobbered:** a file that isn't tracked on the server, but the new commit adds it at that path.
+
+A server change that already matches the commit being deployed isn't flagged. Then pick one:
+
+- **`nodeploy deploy --keep-server-files`** keeps the server's copies and deploys everything else. A file the new commit drops is just untracked first. Any other file is moved aside with `mv` and moved back after the reset; it stays the same file, so an app holding it open (e.g. its database) loses no writes.
+- **`nodeploy deploy --overwrite-server-files`** uses git's versions.
+- **`nodeploy pull-files`** ("sync to git") copies the server's versions into your local checkout, without touching files you have uncommitted edits in unless you pass `--force`. Commit and push them, then deploy: the server's copies now match, so nothing is reset.
+
+Either flag first backs the files up into `<deploy_path>/.git/nodeploy-backups/<time>/` on the server, out of reach of `git reset`/`git clean`. SQLite databases are copied with `sqlite3 .backup` when it's installed.
+
+For data, the lasting fix is to stop tracking it. Do it in this order:
+1. Add the file to `.gitignore` and run `git rm --cached <file>`.
+2. Commit and push.
+3. Deploy once with `--keep-server-files`.
+
+If you skip step 3's flag, the deploy that removes the file from git would delete it on the server.
 
 ### Skipping unchanged deploys
 
@@ -490,6 +520,7 @@ Anything else deploys as usual, and the output says why (e.g. `Deploying: new co
 - `src/lib/remoteApp.ts` — resolves a `RemoteApp` (the common shape `pm2.ts`/`deploy.ts` consume) by branching on `config.runtime` into the Node or Python resolution path.
 - `src/lib/pm2.ts` — all process management goes through the `PM2Adapter` interface; `SSHPM2Adapter` runs `pm2` subcommands on the server via `sshExec`, branching its `start()` command shape on `RemoteApp.runtime` (`npm run <script>` vs `--interpreter <venv-python>`).
 - `src/lib/logRotation.ts` — PM2 log rotation: reads the daemon's state in one round trip, plans the minimal change (install/upgrade/restart the pinned `pm2-logrotate`, or nothing), writes its settings atomically into `module_conf.json`, measures log disk usage, and generates the script behind `logs rotate`.
+- `src/lib/serverChanges.ts` — the deploy guard: asks the server which files `git reset --hard` would overwrite or delete, backs them up, and syncs while keeping them (`--keep-server-files`); `nodeploy pull-files` uses it to copy them into the local repo.
 - `src/lib/doctorChecks.ts` — individual environment health checks, run against the remote server over SSH.
 
 Out of scope for this phase (left as clean extension points, not built): Docker, FastAPI/ASGI (`gunicorn`/`uvicorn` in front) support, env/secrets injection, multi-server roles or accessories (databases, etc.), wildcard certificates and DNS providers other than Cloudflare, automatic DNS/hosts-file management, non-Debian/Ubuntu `setup` support, and a rollback command.

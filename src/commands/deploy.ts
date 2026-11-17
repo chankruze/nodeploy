@@ -29,12 +29,21 @@ import {
 import { createPM2Adapter } from "../lib/pm2.js";
 import { resolveRemoteApp } from "../lib/remoteApp.js";
 import { withNvm } from "../lib/remoteEnv.js";
+import {
+  backupServerFiles,
+  conflicting,
+  guardMessage,
+  inspectServerChanges,
+  syncRepoKeeping,
+} from "../lib/serverChanges.js";
 import { resolveHomePath, sshExec, sshTest } from "../lib/ssh.js";
 import type { DeployConfig, SSHTarget } from "../types.js";
 import { applyLogRotation } from "./logs.js";
 
 interface DeployOptions {
   force?: boolean;
+  keepServerFiles?: boolean;
+  overwriteServerFiles?: boolean;
 }
 
 /** Whether the app from the last deploy is still being served — a skipped
@@ -164,7 +173,20 @@ export function registerDeployCommand(program: Command): void {
       "deploy even if the server already runs this commit with the same config",
       false,
     )
+    .option(
+      "--keep-server-files",
+      "keep files changed on the server (e.g. app data) instead of resetting them to git's versions; backed up first",
+      false,
+    )
+    .option(
+      "--overwrite-server-files",
+      "reset files changed on the server to git's versions; backed up first",
+      false,
+    )
     .action(async (options: DeployOptions) => {
+      if (options.keepServerFiles && options.overwriteServerFiles) {
+        throw new Error("--keep-server-files and --overwrite-server-files can't be used together");
+      }
       const config = loadDeployConfig(process.cwd(), DEPLOY_CONFIG_FILENAME);
       const target = toSSHTarget(config);
 
@@ -210,13 +232,42 @@ export function registerDeployCommand(program: Command): void {
         info(`  Deploying: ${decision.reason}`);
       }
 
-      info("  Syncing repository...");
-      await ensureRepo(target, {
+      const location = {
         repo: config.repo,
         branch: config.branch,
         deployPath: config.deployPath,
         service: config.service,
-      });
+      };
+
+      // The sync is a `git reset --hard`, which would silently roll back
+      // anything changed on the server — e.g. a database committed to the
+      // repo. Stop unless told what to do with such files.
+      info("  Checking for files changed on the server...");
+      const inspected = await inspectServerChanges(target, location);
+      const changed = inspected ? conflicting(inspected.changes) : [];
+      if (changed.length > 0 && !options.keepServerFiles && !options.overwriteServerFiles) {
+        const [first, ...rest] = guardMessage(config.service, changed);
+        fail(first);
+        for (const line of rest) info(line);
+        process.exitCode = 1;
+        return;
+      }
+      if (changed.length > 0) {
+        const where = await backupServerFiles(
+          target,
+          config.deployPath,
+          changed.map((c) => c.path),
+        );
+        success(`  Backed up ${changed.length} file(s) changed on the server to ${where}`);
+      }
+
+      info("  Syncing repository...");
+      if (changed.length > 0 && options.keepServerFiles) {
+        await syncRepoKeeping(target, location, changed);
+        success(`  Kept the server's copies of: ${changed.map((c) => c.path).join(", ")}`);
+      } else {
+        await ensureRepo(target, location);
+      }
       const commit = await checkedOutCommit(target, config.deployPath);
 
       const app = await resolveRemoteApp(target, config);

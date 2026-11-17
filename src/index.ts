@@ -12,6 +12,7 @@ import { registerLogsCommand } from "./commands/logs.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerEdgeCommand } from "./commands/edge.js";
 import { registerRemoveCommand } from "./commands/remove.js";
+import { registerPullFilesCommand } from "./commands/pullFiles.js";
 
 export function createProgram(): Command {
   const program = new Command();
@@ -32,6 +33,7 @@ export function createProgram(): Command {
   registerInitCommand(program);
   registerSetupCommand(program);
   registerDeployCommand(program);
+  registerPullFilesCommand(program);
   registerStatusCommand(program);
   registerRestartCommand(program);
   registerStopCommand(program);
