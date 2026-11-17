@@ -96,17 +96,21 @@ export interface LogRotationState {
 
 const SECTION = "__NODEPLOY_SECTION__";
 
-/** One round trip for everything the log commands need to know. */
+/** One round trip for everything the log commands need to know. Each
+ * marker starts with a newline of its own: the files cat'ed here (PM2's
+ * module_conf.json, package.json) often don't end in one, and a marker glued
+ * to the end of the previous line wouldn't be recognised. */
 export function probeScript(): string {
   const home = REMOTE_PM2_HOME;
+  const marker = (name: string) => `printf '\\n%s\\n' "${SECTION} ${name}"`;
   return [
     `H=${home}`,
-    `echo "${SECTION} home"; echo "$H"`,
-    `echo "${SECTION} conf"; cat "$H/module_conf.json" 2>/dev/null`,
-    `echo "${SECTION} package"; cat "$H/modules/${LOGROTATE_MODULE}/node_modules/${LOGROTATE_MODULE}/package.json" 2>/dev/null`,
+    `${marker("home")}; echo "$H"`,
+    `${marker("conf")}; cat "$H/module_conf.json" 2>/dev/null`,
+    `${marker("package")}; cat "$H/modules/${LOGROTATE_MODULE}/node_modules/${LOGROTATE_MODULE}/package.json" 2>/dev/null`,
     // user:32 keeps long user names from being shown as a uid.
-    `echo "${SECTION} daemons"; (ps -eo user:32=,args= 2>/dev/null || ps -eo user=,args=) | grep 'God Daemon' | grep -v grep`,
-    `echo "${SECTION} jlist"; pm2 jlist`,
+    `${marker("daemons")}; (ps -eo user:32=,args= 2>/dev/null || ps -eo user=,args=) | grep 'God Daemon' | grep -v grep`,
+    `${marker("jlist")}; pm2 jlist`,
     "",
   ].join("\n");
 }
