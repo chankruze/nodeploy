@@ -433,11 +433,52 @@ With `copy_to`, every backup is also copied to the second server, so one dead di
 
 Each copy is uploaded under a temporary name and renamed into place. Old copies on the second server are pruned to `copy_to.keep`. If a copy fails, `backup now`, `deploy` and the backup log warn about it, but the backup on the app server still counts.
 
+#### Emails and download links
+
+```yaml
+backup:
+  paths: [data]
+  email:
+    to: [hr@example.com, you@example.com]
+    # from: "Backups <backups@example.com>"   # defaults to smtp.user
+    smtp: { host: smtp.example.com, port: 587, user: backups@example.com }   # 587 = STARTTLS, 465 = TLS
+  download:
+    lan_port: 8799      # http://<server>:8799/… on the office network (false to turn off)
+    # public: true      # https://<proxy.host>/…; the default when proxy.ssl is set
+    expires: 7          # days a link stays valid (1-30)
+```
+
+**Emails** come from the server itself, with `curl`'s SMTP support, so they keep coming without your machine. Use any SMTP account you like (Gmail with an app password, your domain's mail, a transactional service). There are two kinds:
+- **A daily email** after each scheduled backup, with the backup's name, size, second-server copy, download links, and the command to restore it.
+- **An immediate email** whenever any backup (scheduled, pre-deploy, manual) or its copy to the second server fails, with what went wrong.
+
+Successful manual and pre-deploy backups don't send anything. The backup work runs in a subshell, so a backup that stops early still sends its failure email.
+
+**The SMTP password never goes in `nodeploy.yml`** (it's rejected there). Store it once from your machine:
+```sh
+NODEPLOY_SMTP_PASSWORD='app-password' nodeploy backup setup
+nodeploy backup test-email          # check the settings work
+```
+It travels over SSH on stdin only, so it never appears in a command line, and it's stored in `~/.nodeploy/smtp.netrc` on the server (mode 600), which `curl` reads directly.
+
+**Download links** are signed and expire, enforced by the server's nginx with `secure_link`. A link works only with its signature, only for that one file, and only until it expires (`403` for a bad signature, `410` once expired). Each link also has a random path. Two links go in the email:
+- **one on the office network,** on a small `lan_port` listener;
+- **one from anywhere,** on the app's own HTTPS site (`proxy.host`, with `proxy.ssl`), so it uses the site's certificate and edge routing.
+
+`nodeploy backup setup` does the one-time server side, which needs nginx, and root or passwordless sudo:
+1. Creates the signing secret.
+2. Creates the download directory (`/var/lib/nodeploy/downloads`, readable by nginx).
+3. Writes the nginx snippet and the LAN listener, validated with `nginx -t` and rolled back if nginx rejects them.
+
+Public links start working once the app has been deployed by this version, since every site nodeploy generates includes the snippet (a no-op until it exists). Downloadable copies are removed once their links expire. `nodeploy backup link [name|latest]` makes a fresh link for any backup.
+
 ```sh
 nodeploy backup now                 # back up right now
 nodeploy backup list                # backups on the server, newest first, and the schedule
 nodeploy backup restore [name]      # "latest" by default; asks you to type the service name (--yes to skip)
 nodeploy backup setup               # (re)install the script and schedule; setup and deploy do this too
+nodeploy backup link [name]         # a signed download link ("latest" by default)
+nodeploy backup test-email          # send a test email with the backup email settings
 ```
 
 `restore` does this:
@@ -584,6 +625,7 @@ Anything else deploys as usual, and the output says why (e.g. `Deploying: new co
 - `src/lib/pm2.ts` — all process management goes through the `PM2Adapter` interface; `SSHPM2Adapter` runs `pm2` subcommands on the server via `sshExec`, branching its `start()` command shape on `RemoteApp.runtime` (`npm run <script>` vs `--interpreter <venv-python>`).
 - `src/lib/logRotation.ts` — PM2 log rotation: reads the daemon's state in one round trip, plans the minimal change (install/upgrade/restart the pinned `pm2-logrotate`, or nothing), writes its settings atomically into `module_conf.json`, measures log disk usage, and generates the script behind `logs rotate`.
 - `src/lib/serverChanges.ts` — the deploy guard: asks the server which files `git reset --hard` would overwrite or delete, backs them up, and syncs while keeping them (`--keep-server-files`); `nodeploy pull-files` uses it to copy them into the local repo.
+- `src/lib/backupMail.ts` — backup emails (sent from the server with curl's SMTP, password in a netrc file) and signed, expiring download links (nginx `secure_link`), plus their one-time server setup.
 - `src/lib/backup.ts` — backups: generates the per-app backup and restore scripts (SQLite-consistent snapshots, checksums, locking, retention), installs the script and its crontab line, and lists archives.
 - `src/lib/doctorChecks.ts` — individual environment health checks, run against the remote server over SSH.
 

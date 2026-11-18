@@ -6,6 +6,7 @@ import {
   DEFAULT_BACKUP_SCHEDULE,
   isValidSchedule,
 } from "./backup.js";
+import { emailAddress } from "./backupMail.js";
 import { isValidMaxSize } from "./logRotation.js";
 import {
   DEFAULT_BRANCH,
@@ -16,6 +17,8 @@ import {
 import type {
   BackupConfig,
   BackupCopyConfig,
+  BackupDownloadConfig,
+  BackupEmailConfig,
   DeployConfig,
   EdgeConfig,
   LogRotationConfig,
@@ -204,14 +207,105 @@ function validateBackupCopy(raw: unknown, ssh: SSHConfig, keep: number): BackupC
   };
 }
 
-export function validateBackup(raw: unknown, ssh: SSHConfig): BackupConfig {
+const EMAIL = /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/;
+const HOSTNAME = /^[A-Za-z0-9.-]+$/;
+
+function validateBackupEmail(raw: unknown): BackupEmailConfig {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error("nodeploy.yml: \"backup.email\" must be an object (e.g. email: { to: [you@example.com], smtp: { host: smtp.example.com, user: backups@example.com } })");
+  }
+  const r = raw as Record<string, unknown>;
+  for (const key of Object.keys(r)) {
+    if (!["to", "from", "smtp"].includes(key)) {
+      throw new Error(`nodeploy.yml: unknown key "backup.email.${key}" (expected one of: to, from, smtp)`);
+    }
+  }
+  const to = typeof r.to === "string" ? [r.to] : r.to;
+  if (!Array.isArray(to) || to.length === 0 || !to.every((a) => typeof a === "string" && EMAIL.test(a.trim()))) {
+    throw new Error("nodeploy.yml: \"backup.email.to\" must be an email address or a list of them");
+  }
+  const smtpRaw = r.smtp as Record<string, unknown> | undefined;
+  if (typeof smtpRaw !== "object" || smtpRaw === null) {
+    throw new Error("nodeploy.yml: \"backup.email.smtp\" must be an object with host and user (the password is never stored here — see `nodeploy backup setup`)");
+  }
+  for (const key of Object.keys(smtpRaw)) {
+    if (key === "password" || key === "pass") {
+      throw new Error("nodeploy.yml: don't put the SMTP password in nodeploy.yml — run `nodeploy backup setup` with NODEPLOY_SMTP_PASSWORD set instead; it's stored on the server, readable only by the SSH user");
+    }
+    if (!["host", "port", "user"].includes(key)) {
+      throw new Error(`nodeploy.yml: unknown key "backup.email.smtp.${key}" (expected one of: host, port, user)`);
+    }
+  }
+  if (typeof smtpRaw.host !== "string" || !HOSTNAME.test(smtpRaw.host)) {
+    throw new Error("nodeploy.yml: \"backup.email.smtp.host\" must be a hostname like smtp.gmail.com");
+  }
+  if (typeof smtpRaw.user !== "string" || smtpRaw.user.trim().length === 0 || /\s/.test(smtpRaw.user)) {
+    throw new Error("nodeploy.yml: \"backup.email.smtp.user\" must be the SMTP login, usually the sending address");
+  }
+  let port = 587;
+  if (smtpRaw.port !== undefined) {
+    if (typeof smtpRaw.port !== "number" || !Number.isInteger(smtpRaw.port) || smtpRaw.port < 1 || smtpRaw.port > 65535) {
+      throw new Error("nodeploy.yml: \"backup.email.smtp.port\" must be a port number (587 for STARTTLS, 465 for TLS)");
+    }
+    port = smtpRaw.port;
+  }
+  let from = smtpRaw.user;
+  if (r.from !== undefined) {
+    if (typeof r.from !== "string" || !EMAIL.test(emailAddress(r.from)) || /[\r\n]/.test(r.from)) {
+      throw new Error("nodeploy.yml: \"backup.email.from\" must be an address or \"Name <address>\"");
+    }
+    from = r.from.trim();
+  }
+  return { to: (to as string[]).map((a) => a.trim()), from, smtp: { host: smtpRaw.host, port, user: smtpRaw.user.trim() } };
+}
+
+function validateBackupDownload(raw: unknown, hasPublicSite: boolean): BackupDownloadConfig {
+  const r = (raw === true ? {} : raw) as Record<string, unknown>;
+  if (typeof r !== "object" || r === null || Array.isArray(r)) {
+    throw new Error("nodeploy.yml: \"backup.download\" must be true or an object (e.g. download: { lan_port: 8799, expires: 7 })");
+  }
+  for (const key of Object.keys(r)) {
+    if (!["lan_port", "public", "expires"].includes(key)) {
+      throw new Error(`nodeploy.yml: unknown key "backup.download.${key}" (expected one of: lan_port, public, expires)`);
+    }
+  }
+  let lanPort: number | null = 8799;
+  if (r.lan_port === false) lanPort = null;
+  else if (r.lan_port !== undefined) {
+    if (typeof r.lan_port !== "number" || !Number.isInteger(r.lan_port) || r.lan_port < 1024 || r.lan_port > 65535) {
+      throw new Error("nodeploy.yml: \"backup.download.lan_port\" must be a free port from 1024 to 65535, or false");
+    }
+    lanPort = r.lan_port;
+  }
+  let isPublic = hasPublicSite;
+  if (r.public !== undefined) {
+    if (typeof r.public !== "boolean") throw new Error("nodeploy.yml: \"backup.download.public\" must be true or false");
+    if (r.public && !hasPublicSite) {
+      throw new Error("nodeploy.yml: \"backup.download.public\" needs the app's own HTTPS site (proxy.host with proxy.ssl) to serve links from");
+    }
+    isPublic = r.public;
+  }
+  let expiresDays = 7;
+  if (r.expires !== undefined) {
+    if (typeof r.expires !== "number" || !Number.isInteger(r.expires) || r.expires < 1 || r.expires > 30) {
+      throw new Error("nodeploy.yml: \"backup.download.expires\" must be a number of days from 1 to 30");
+    }
+    expiresDays = r.expires;
+  }
+  if (lanPort === null && !isPublic) {
+    throw new Error("nodeploy.yml: \"backup.download\" has no link left to make — keep lan_port or public");
+  }
+  return { lanPort, public: isPublic, expiresDays };
+}
+
+export function validateBackup(raw: unknown, ssh: SSHConfig, hasPublicSite = false): BackupConfig {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new Error(
       "nodeploy.yml: \"backup\" must be an object (e.g. backup: { paths: [data/app.db] })",
     );
   }
   const r = raw as Record<string, unknown>;
-  const known = ["paths", "schedule", "keep", "copy_to"];
+  const known = ["paths", "schedule", "keep", "copy_to", "email", "download"];
   for (const key of Object.keys(r)) {
     if (!known.includes(key)) {
       throw new Error(
@@ -258,6 +352,10 @@ export function validateBackup(raw: unknown, ssh: SSHConfig): BackupConfig {
 
   const backup: BackupConfig = { paths: [...new Set(paths)], schedule, keep };
   if (r.copy_to !== undefined) backup.copyTo = validateBackupCopy(r.copy_to, ssh, keep);
+  if (r.email !== undefined) backup.email = validateBackupEmail(r.email);
+  if (r.download !== undefined && r.download !== false) {
+    backup.download = validateBackupDownload(r.download, hasPublicSite);
+  }
   return backup;
 }
 
@@ -449,7 +547,7 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
     config.logRotation = validateLogRotation(candidate.log_rotation);
   }
   if (candidate.backup !== undefined) {
-    config.backup = validateBackup(candidate.backup, ssh);
+    config.backup = validateBackup(candidate.backup, ssh, Boolean(proxy?.ssl));
   }
 
   return config;

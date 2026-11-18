@@ -90,6 +90,33 @@ export interface BackupConfig {
   /** Optional second server every backup is also copied to, so one dead
    * disk can't take both the app and its backups. */
   copyTo?: BackupCopyConfig;
+  /** Optional email after each scheduled backup (with download links, if
+   * `download` is set) and whenever a backup or its copy fails. */
+  email?: BackupEmailConfig;
+  /** Optional signed, expiring download links, served by nginx on the app
+   * server: in the emails, and from `nodeploy backup link`. */
+  download?: BackupDownloadConfig;
+}
+
+export interface BackupEmailConfig {
+  to: string[];
+  /** "Name <address>" or an address; defaults to smtp.user. */
+  from: string;
+  smtp: {
+    host: string;
+    /** 587 (STARTTLS, default) or 465 (TLS). */
+    port: number;
+    user: string;
+  };
+}
+
+export interface BackupDownloadConfig {
+  /** Office-network link: http://<server>:<port>/…; null to turn off. */
+  lanPort: number | null;
+  /** Internet link via the app's own HTTPS site (needs proxy.ssl). */
+  public: boolean;
+  /** Days a link stays valid. */
+  expiresDays: number;
 }
 
 export interface BackupCopyConfig {

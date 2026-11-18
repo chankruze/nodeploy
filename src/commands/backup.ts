@@ -16,6 +16,17 @@ import { formatBytes } from "../lib/format.js";
 import { fail, info, success, warn } from "../lib/logger.js";
 import { createPM2Adapter } from "../lib/pm2.js";
 import { confirmByTyping } from "../lib/prompt.js";
+import {
+  downloadSetupScript,
+  hasNetrcScript,
+  linkFunctions,
+  mailFunctions,
+  netrcScript,
+  siteIncludesSnippetScript,
+} from "../lib/backupMail.js";
+import { shellQuote } from "../lib/logRotation.js";
+import { sshExec } from "../lib/ssh.js";
+import { NODEPLOY_CREDIT, NODEPLOY_URL, SMTP_PASSWORD_ENV } from "../constants.js";
 import type { DeployConfig, SSHTarget } from "../types.js";
 
 interface RestoreOptions {
@@ -39,6 +50,63 @@ function loadBackupApp(): { config: DeployConfig & { backup: NonNullable<DeployC
     return null;
   }
   return { config: config as DeployConfig & { backup: NonNullable<DeployConfig["backup"]> }, target: toSSHTarget(config) };
+}
+
+/** Stores the SMTP password on the server when NODEPLOY_SMTP_PASSWORD is
+ * set (piped over SSH, never on a command line); otherwise checks one is
+ * already there. */
+async function setupSmtpPassword(
+  email: NonNullable<NonNullable<DeployConfig["backup"]>["email"]>,
+  target: SSHTarget,
+  quiet?: boolean,
+): Promise<void> {
+  const { host, user } = email.smtp;
+  const password = process.env[SMTP_PASSWORD_ENV];
+  try {
+    if (password) {
+      // The script is the command; the password alone travels on stdin, so
+      // it's in no command line or script text.
+      await sshExec(target, `sh -c ${shellQuote(netrcScript(host, user))}`, {
+        input: `${password.replace(/[\r\n]+$/, "")}\n`,
+      });
+      if (!quiet) success(`  SMTP password for ${user}@${host} stored on the server (readable only by ${target.user})`);
+      return;
+    }
+    const { stdout } = await sshExec(target, hasNetrcScript(host, user));
+    if (stdout.trim() !== "yes") {
+      warn(`  No SMTP password on the server for ${user}@${host} — backup emails won't send until you run \`nodeploy backup setup\` with ${SMTP_PASSWORD_ENV} set`);
+    }
+  } catch (error) {
+    warn(`  Could not store the SMTP password: ${(error as Error).message}`);
+  }
+}
+
+/** One-time nginx setup for download links (needs root or passwordless sudo). */
+async function setupDownloads(
+  config: DeployConfig & { backup: NonNullable<DeployConfig["backup"]> },
+  target: SSHTarget,
+  quiet?: boolean,
+): Promise<void> {
+  const download = config.backup.download!;
+  try {
+    await sshExec(target, "sh -s", { input: downloadSetupScript(config.service, download) });
+    if (!quiet) {
+      const where = [
+        download.lanPort ? `http://${config.server}:${download.lanPort}` : null,
+        download.public && config.proxy ? `https://${config.proxy.host}` : null,
+      ].filter(Boolean).join(" and ");
+      success(`  Download links set up on ${where}, valid ${download.expiresDays} day(s)`);
+    }
+    if (download.public) {
+      const { stdout } = await sshExec(target, siteIncludesSnippetScript(config.service));
+      if (stdout.trim() !== "yes") {
+        info(`  Public links start working after the next \`nodeploy deploy\` of ${config.service} (its nginx site needs the downloads include)`);
+      }
+    }
+  } catch (error) {
+    const message = (error as { stderr?: string }).stderr?.trim() || (error as Error).message;
+    warn(`  Download links aren't set up — needs root or passwordless sudo, and nginx. (${message})`);
+  }
 }
 
 /** `setup`, `deploy`, and `backup setup` install the script and schedule
@@ -65,14 +133,11 @@ export async function applyBackupSetup(
       warn(`  Backups won't be copied to ${copy.server} until this is fixed: ${(error as Error).message}`);
     }
   }
+  const backupConfig = config as DeployConfig & { backup: NonNullable<DeployConfig["backup"]> };
+  if (config.backup.email) await setupSmtpPassword(config.backup.email, target, opts.quiet);
+  if (config.backup.download) await setupDownloads(backupConfig, target, opts.quiet);
   try {
-    const { cron, warnings } = await setupBackups(
-      target,
-      config.service,
-      config.deployPath,
-      config.backup,
-      version,
-    );
+    const { cron, warnings } = await setupBackups(target, backupConfig, version);
     if (!opts.quiet) {
       const when = cron ? cron.split(" /bin/sh")[0] : null;
       success(
@@ -97,6 +162,8 @@ export function reportBackup(result: BackupRunResult, indent = ""): boolean {
   success(`${indent}Backed up to ${result.archive} (${formatBytes(result.bytes)})`);
   if (result.copied) success(`${indent}Copied to ${result.copied}`);
   if (result.copyError) warn(`${indent}${result.copyError} — the backup on the app server is fine`);
+  if (result.linkError) warn(`${indent}No download link: ${result.linkError}`);
+  if (result.mailError) warn(`${indent}The email didn't send: ${result.mailError}`);
   if (result.pruned.length > 0) info(`${indent}Deleted ${result.pruned.length} old backup(s) beyond keep`);
   return true;
 }
@@ -161,6 +228,79 @@ export function registerBackupCommand(program: Command): void {
       }
       for (const e of entries) {
         info(`  ${e.created}  ${e.reason.padEnd(11)}  ${formatBytes(e.bytes).padStart(9)}  ${e.name}`);
+      }
+    });
+
+  backup
+    .command("link [backup]")
+    .description(
+      "Make a signed download link for a backup (a name from `backup list`, or \"latest\"), valid for backup.download.expires days",
+    )
+    .action(async (name: string | undefined) => {
+      const app = loadBackupApp();
+      if (!app) return;
+      const { config, target } = app;
+      const download = config.backup.download;
+      if (!download) {
+        fail("Download links are off — add `download:` to the backup block in nodeploy.yml (e.g. download: { lan_port: 8799 }), then run `nodeploy backup setup`.");
+        process.exitCode = 1;
+        return;
+      }
+      const { entries } = await listBackups(target, config.service);
+      const chosen = !name || name === "latest" ? entries[0] : entries.find((e) => e.name === name || e.name === `${name}.tar.gz`);
+      if (!chosen) {
+        fail(entries.length === 0 ? `${config.service} has no backups yet.` : `No backup "${name}" — \`nodeploy backup list\` shows them.`);
+        process.exitCode = 1;
+        return;
+      }
+      const { stdout } = await sshExec(target, "sh -s", {
+        input: `set -u\n${linkFunctions(config.service, download)}prune_links\nmake_link ${shellQuote(chosen.path)}\n`,
+      }).catch((error: { stdout?: string }) => ({ stdout: error.stdout ?? "" }));
+      const line = stdout.split("\n").find((l) => l.startsWith("DOWNLOAD\t"));
+      if (!line) {
+        const why = stdout.split("\n").find((l) => l.startsWith("LINK_ERROR\t"))?.slice(11);
+        fail(`Could not make a link: ${why ?? "unknown error"}`);
+        process.exitCode = 1;
+        return;
+      }
+      const [, path, expires] = line.split("\t");
+      info(`${chosen.name} (${chosen.reason}, ${chosen.created}, ${formatBytes(chosen.bytes)}):`);
+      if (download.lanPort) info(`  On the office network: http://${config.server}:${download.lanPort}${path}`);
+      if (download.public && config.proxy) info(`  From anywhere:         https://${config.proxy.host}${path}`);
+      info(`Valid until ${new Date(Number(expires) * 1000).toLocaleString()}. Anyone with the link can download the backup until then — share it carefully.`);
+    });
+
+  backup
+    .command("test-email")
+    .description("Send a test email with the backup email settings, to check SMTP works")
+    .action(async () => {
+      const app = loadBackupApp();
+      if (!app) return;
+      const { config, target } = app;
+      const email = config.backup.email;
+      if (!email) {
+        fail("Backup emails are off — add `email:` to the backup block in nodeploy.yml, then run `nodeploy backup setup` with NODEPLOY_SMTP_PASSWORD set.");
+        process.exitCode = 1;
+        return;
+      }
+      const body = [
+        `This is a test email from the nodeploy backups of ${config.service} on ${config.server}.`,
+        "",
+        `If you got it, backup emails work: a daily one after each scheduled backup${config.backup.download ? " (with a download link)" : ""}, and one whenever a backup fails.`,
+        "",
+        "—",
+        `Sent by nodeploy v${version} (${NODEPLOY_URL}), built by ${NODEPLOY_CREDIT}.`,
+      ].join("\n");
+      const { stdout } = await sshExec(target, "sh -s", {
+        input: `set -u\n${mailFunctions(email)}BODY=$(mktemp)\ncat > "$BODY" <<'NODEPLOY_BODY'\n${body}\nNODEPLOY_BODY\nsend_mail ${shellQuote(`[nodeploy] Test email from ${config.service} on ${config.server}`)} "$BODY"\nrm -f "$BODY"\n`,
+      }).catch((error: { stdout?: string }) => ({ stdout: error.stdout ?? "" }));
+      const sent = stdout.split("\n").find((l) => l.startsWith("MAILED\t"));
+      if (sent) {
+        success(`Test email sent to ${email.to.join(", ")} via ${email.smtp.host}:${email.smtp.port}`);
+      } else {
+        const why = stdout.split("\n").find((l) => l.startsWith("MAIL_ERROR\t"))?.slice(11);
+        fail(`Sending failed: ${why ?? "unknown error"}`);
+        process.exitCode = 1;
       }
     });
 

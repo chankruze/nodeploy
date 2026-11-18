@@ -21,3 +21,11 @@ export const DEFAULT_LOG_ROTATION = {
   compress: true,
   interval: 30,
 } as const;
+
+/** Credits in the emails nodeploy sends (backup notifications). */
+export const NODEPLOY_CREDIT = "Chandan Kumar Mandal";
+export const NODEPLOY_URL = "https://github.com/chankruze/nodeploy";
+
+/** Local env var `nodeploy backup setup` reads the SMTP password from, for
+ * backup emails. Never stored in nodeploy.yml. */
+export const SMTP_PASSWORD_ENV = "NODEPLOY_SMTP_PASSWORD";

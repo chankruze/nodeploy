@@ -14,6 +14,7 @@ import {
   hasCloudflareCredentials,
 } from "./cloudflare.js";
 import { CLOUDFLARE_TOKEN_ENV } from "../constants.js";
+import { DOWNLOAD_SNIPPET_INCLUDE } from "./backupMail.js";
 import { sshExec } from "./ssh.js";
 import type { SSHTarget, SSLConfig } from "../types.js";
 
@@ -68,6 +69,10 @@ export interface SiteOptions {
 /** Wraps a site body in nginx server block(s). With `ssl`, port 80 only
  * answers ACME challenges and redirects to HTTPS, and the body moves to the
  * HTTPS block (see SiteOptions for where that listens). */
+// Backup download links (nodeploy backup link): a no-op until `backup
+// setup` writes the snippet — nginx skips a wildcard include with no match.
+const DOWNLOADS_INCLUDE = `    include ${DOWNLOAD_SNIPPET_INCLUDE};`;
+
 function buildSite(host: string, body: string, opts: SiteOptions): string {
   const httpRealIP = opts.behindEdge
     ? `\n${realIPDirectives(opts.behindEdge, "X-Forwarded-For")}\n`
@@ -79,6 +84,7 @@ function buildSite(host: string, body: string, opts: SiteOptions): string {
     server_name ${host};
 ${httpRealIP}
 ${ACME_LOCATION}
+${DOWNLOADS_INCLUDE}
 
 ${body}
 }
@@ -115,6 +121,7 @@ ${tlsListen}
 
     ssl_certificate ${certDir}/fullchain.pem;
     ssl_certificate_key ${certDir}/privkey.pem;
+${DOWNLOADS_INCLUDE}
 
 ${body}
 }

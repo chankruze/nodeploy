@@ -87,6 +87,16 @@ ssh:
 #   #   ssh: { user: backup, port: 22 }       # defaults to the ssh block above
 #   #   path: nodeploy-backups                # per-app subdirectory is added
 #   #   keep: 14                              # defaults to backup.keep
+#   # Email after each scheduled backup, and whenever a backup fails. Store
+#   # the password once with: NODEPLOY_SMTP_PASSWORD=… nodeploy backup setup
+#   # email:
+#   #   to: [you@example.com]
+#   #   smtp: { host: smtp.example.com, port: 587, user: backups@example.com }
+#   # Signed download links (expire after N days) in that email, and from
+#   # \`nodeploy backup link\`. Needs nginx, and root or passwordless sudo.
+#   # download:
+#   #   lan_port: 8799                        # http://<server>:8799/… on the office network
+#   #   expires: 7                            # days; public HTTPS links too when proxy.ssl is set
 `;
 
 export function registerInitCommand(program: Command): void {

@@ -30,6 +30,19 @@ describe("init template", () => {
     expect(config.backup).toEqual({ paths: ["data"], schedule: "daily", keep: 14 });
   });
 
+  it("stays valid with backup.email and backup.download uncommented too", () => {
+    const text = uncomment(TEMPLATE, "backup")
+      .replace("  # email:", "  email:")
+      .replace("  #   to:", "    to:")
+      .replace("  #   smtp:", "    smtp:")
+      .replace("  # download:", "  download:")
+      .replace("  #   lan_port:", "    lan_port:")
+      .replace("  #   expires:", "    expires:");
+    const backup = validateDeployConfig(parse(text)).backup!;
+    expect(backup.email?.smtp).toEqual({ host: "smtp.example.com", port: 587, user: "backups@example.com" });
+    expect(backup.download).toEqual({ lanPort: 8799, public: false, expiresDays: 7 });
+  });
+
   it("stays valid with backup.copy_to uncommented too", () => {
     const text = uncomment(TEMPLATE, "backup").replace("  # copy_to:", "  copy_to:").replace("  #   server:", "    server:");
     expect(validateDeployConfig(parse(text)).backup?.copyTo?.server).toBe("192.168.0.12");
