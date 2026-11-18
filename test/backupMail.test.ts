@@ -299,3 +299,14 @@ describe("email and download in nodeploy.yml", () => {
     expect(() => validateDeployConfig({ ...base, backup: { paths: ["d"], ...extra } })).toThrow(message);
   });
 });
+
+describe("remoteFailure", () => {
+  it("prefers the script's own error, then SSH's, never a bare 'unknown error' when SSH said why", async () => {
+    const { remoteFailure } = await import("../src/commands/backup.js");
+    expect(remoteFailure("MAIL_ERROR\tcurl: (67) Login denied\n", "MAIL_ERROR", "")).toBe("curl: (67) Login denied");
+    expect(
+      remoteFailure("", "MAIL_ERROR", "sign_and_send_pubkey: signing failed\nbeepl1@office.example: Permission denied (publickey,password).\nConnection closed by UNKNOWN port 65535\n"),
+    ).toBe("couldn't run it on the server — beepl1@office.example: Permission denied (publickey,password).");
+    expect(remoteFailure("", "LINK_ERROR", "")).toBe("unknown error");
+  });
+});

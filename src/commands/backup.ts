@@ -109,6 +109,26 @@ async function setupDownloads(
   }
 }
 
+/** Why a remote helper script failed: its own tagged line if it printed
+ * one, else SSH's last error line (e.g. a refused key or a timeout). */
+function remoteFailure(stdout: string, tag: string, sshError: string): string {
+  const own = stdout.split("\n").find((l) => l.startsWith(`${tag}\t`))?.slice(tag.length + 1);
+  if (own) return own;
+  // "Connection to … closed" / "Connection closed by …" say nothing about why.
+  const last = sshError.trim().split("\n").filter((l) => l && !/^Connection (to|closed)\b/.test(l)).pop();
+  return last ? `couldn't run it on the server — ${last}` : "unknown error";
+}
+
+async function runRemote(target: SSHTarget, input: string): Promise<{ stdout: string; sshError: string }> {
+  try {
+    const { stdout } = await sshExec(target, "sh -s", { input });
+    return { stdout, sshError: "" };
+  } catch (error) {
+    const e = error as { stdout?: string; stderr?: string; message?: string };
+    return { stdout: e.stdout ?? "", sshError: e.stderr || e.message || "" };
+  }
+}
+
 /** `setup`, `deploy`, and `backup setup` install the script and schedule
  * the same way. Returns false if that failed. */
 export async function applyBackupSetup(
@@ -178,6 +198,8 @@ export async function backupNow(
   await applyBackupSetup(config, target, { quiet: true });
   return runBackup(target, config.service, reason);
 }
+
+export { remoteFailure };
 
 export function registerBackupCommand(program: Command): void {
   const backup = program
@@ -253,13 +275,13 @@ export function registerBackupCommand(program: Command): void {
         process.exitCode = 1;
         return;
       }
-      const { stdout } = await sshExec(target, "sh -s", {
-        input: `set -u\n${linkFunctions(config.service, download)}prune_links\nmake_link ${shellQuote(chosen.path)}\n`,
-      }).catch((error: { stdout?: string }) => ({ stdout: error.stdout ?? "" }));
+      const { stdout, sshError } = await runRemote(
+        target,
+        `set -u\n${linkFunctions(config.service, download)}prune_links\nmake_link ${shellQuote(chosen.path)}\n`,
+      );
       const line = stdout.split("\n").find((l) => l.startsWith("DOWNLOAD\t"));
       if (!line) {
-        const why = stdout.split("\n").find((l) => l.startsWith("LINK_ERROR\t"))?.slice(11);
-        fail(`Could not make a link: ${why ?? "unknown error"}`);
+        fail(`Could not make a link: ${remoteFailure(stdout, "LINK_ERROR", sshError)}`);
         process.exitCode = 1;
         return;
       }
@@ -291,15 +313,15 @@ export function registerBackupCommand(program: Command): void {
         "—",
         `Sent by nodeploy v${version} (${NODEPLOY_URL}), built by ${NODEPLOY_CREDIT}.`,
       ].join("\n");
-      const { stdout } = await sshExec(target, "sh -s", {
-        input: `set -u\n${mailFunctions(email)}BODY=$(mktemp)\ncat > "$BODY" <<'NODEPLOY_BODY'\n${body}\nNODEPLOY_BODY\nsend_mail ${shellQuote(`[nodeploy] Test email from ${config.service} on ${config.server}`)} "$BODY"\nrm -f "$BODY"\n`,
-      }).catch((error: { stdout?: string }) => ({ stdout: error.stdout ?? "" }));
+      const { stdout, sshError } = await runRemote(
+        target,
+        `set -u\n${mailFunctions(email)}BODY=$(mktemp)\ncat > "$BODY" <<'NODEPLOY_BODY'\n${body}\nNODEPLOY_BODY\nsend_mail ${shellQuote(`[nodeploy] Test email from ${config.service} on ${config.server}`)} "$BODY"\nrm -f "$BODY"\n`,
+      );
       const sent = stdout.split("\n").find((l) => l.startsWith("MAILED\t"));
       if (sent) {
         success(`Test email sent to ${email.to.join(", ")} via ${email.smtp.host}:${email.smtp.port}`);
       } else {
-        const why = stdout.split("\n").find((l) => l.startsWith("MAIL_ERROR\t"))?.slice(11);
-        fail(`Sending failed: ${why ?? "unknown error"}`);
+        fail(`Sending failed: ${remoteFailure(stdout, "MAIL_ERROR", sshError)}`);
         process.exitCode = 1;
       }
     });
