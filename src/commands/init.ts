@@ -8,7 +8,7 @@ interface InitOptions {
   force?: boolean;
 }
 
-const TEMPLATE = `# Name of your app. Used as the PM2 process name and nginx server block name.
+export const TEMPLATE = `# Name of your app. Used as the PM2 process name and nginx server block name.
 service: my-app
 
 # Git repository to clone/pull on the server. Use an SSH URL the server can reach
@@ -63,6 +63,30 @@ ssh:
 #     server: 192.168.0.8
 #     # ssh: { user: root }                   # defaults to the ssh block above
 #     # upstream: 192.168.0.12                # how the edge reaches this server; defaults to server
+
+# PM2 log rotation for the server (shared by every app on the same PM2).
+# On by default with these settings — uncomment only to change them.
+# log_rotation:
+#   max_size: 50M
+#   retain: 7
+#   compress: true
+#   interval: 30                              # seconds between size checks
+
+# Back up the app's data on the server: on a schedule, before every deploy,
+# and with \`nodeploy backup now\`. Restore with \`nodeploy backup restore\`.
+# backup:
+#   paths:                                    # relative to deploy_path
+#     - data
+#     # - app.db                              # SQLite is snapshotted consistently
+#   schedule: daily                           # daily (02:xx) | hourly | off | "30 1 * * *"
+#   keep: 14                                  # older backups are deleted
+#   # Also copy every backup to a second server, so one dead disk can't take
+#   # both the app and its backups. nodeploy sets up the SSH access itself.
+#   # copy_to:
+#   #   server: 192.168.0.12
+#   #   ssh: { user: backup, port: 22 }       # defaults to the ssh block above
+#   #   path: nodeploy-backups                # per-app subdirectory is added
+#   #   keep: 14                              # defaults to backup.keep
 `;
 
 export function registerInitCommand(program: Command): void {
