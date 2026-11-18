@@ -15,6 +15,7 @@ import {
 } from "../constants.js";
 import type {
   BackupConfig,
+  BackupCopyConfig,
   DeployConfig,
   EdgeConfig,
   LogRotationConfig,
@@ -165,14 +166,52 @@ export function validateLogRotation(raw: unknown): Partial<LogRotationConfig> {
   return result;
 }
 
-export function validateBackup(raw: unknown): BackupConfig {
+const COPY_PATH = /^(~\/)?[A-Za-z0-9._/-]+$/;
+
+function validateBackupCopy(raw: unknown, ssh: SSHConfig, keep: number): BackupCopyConfig {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error("nodeploy.yml: \"backup.copy_to\" must be an object (e.g. copy_to: { server: 192.168.0.12 })");
+  }
+  const r = raw as Record<string, unknown>;
+  const known = ["server", "ssh", "path", "keep"];
+  for (const key of Object.keys(r)) {
+    if (!known.includes(key)) {
+      throw new Error(`nodeploy.yml: unknown key "backup.copy_to.${key}" (expected one of: ${known.join(", ")})`);
+    }
+  }
+  if (typeof r.server !== "string" || r.server.length === 0) {
+    throw new Error("nodeploy.yml: \"backup.copy_to.server\" must be a non-empty string");
+  }
+  let path = "nodeploy-backups";
+  if (r.path !== undefined) {
+    if (typeof r.path !== "string" || !COPY_PATH.test(r.path) || r.path.split("/").includes("..")) {
+      throw new Error("nodeploy.yml: \"backup.copy_to.path\" must be a directory like nodeploy-backups or /srv/backups (letters, digits, . _ - / only)");
+    }
+    path = r.path.replace(/^~\//, "").replace(/\/+$/, "");
+  }
+  let copyKeep = keep;
+  if (r.keep !== undefined) {
+    if (typeof r.keep !== "number" || !Number.isInteger(r.keep) || r.keep < 1) {
+      throw new Error("nodeploy.yml: \"backup.copy_to.keep\" must be a whole number of at least 1");
+    }
+    copyKeep = r.keep;
+  }
+  return {
+    server: r.server,
+    ssh: r.ssh === undefined ? ssh : validateSSHConfig(r.ssh, "backup.copy_to.ssh"),
+    path,
+    keep: copyKeep,
+  };
+}
+
+export function validateBackup(raw: unknown, ssh: SSHConfig): BackupConfig {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new Error(
       "nodeploy.yml: \"backup\" must be an object (e.g. backup: { paths: [data/app.db] })",
     );
   }
   const r = raw as Record<string, unknown>;
-  const known = ["paths", "schedule", "keep"];
+  const known = ["paths", "schedule", "keep", "copy_to"];
   for (const key of Object.keys(r)) {
     if (!known.includes(key)) {
       throw new Error(
@@ -217,7 +256,9 @@ export function validateBackup(raw: unknown): BackupConfig {
     keep = r.keep;
   }
 
-  return { paths: [...new Set(paths)], schedule, keep };
+  const backup: BackupConfig = { paths: [...new Set(paths)], schedule, keep };
+  if (r.copy_to !== undefined) backup.copyTo = validateBackupCopy(r.copy_to, ssh, keep);
+  return backup;
 }
 
 // Fields that only make sense when nodeploy checks out and runs the app.
@@ -408,7 +449,7 @@ export function validateDeployConfig(raw: unknown): DeployConfig {
     config.logRotation = validateLogRotation(candidate.log_rotation);
   }
   if (candidate.backup !== undefined) {
-    config.backup = validateBackup(candidate.backup);
+    config.backup = validateBackup(candidate.backup, ssh);
   }
 
   return config;

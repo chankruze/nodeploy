@@ -413,6 +413,26 @@ Details that matter for live data:
 - **No overlapping runs:** a lock stops a scheduled run and a manual one from running together, and a lock left by a run that died is taken over.
 - **Missing paths are reported, not fatal.**
 
+#### A copy on a second server
+
+```yaml
+backup:
+  paths: [data]
+  copy_to:
+    server: 192.168.0.12
+    # ssh: { user: backup, port: 22 }   # defaults to the app's ssh block
+    # path: nodeploy-backups            # relative to that user's home; each app gets a subdirectory
+    # keep: 14                          # defaults to backup.keep
+```
+
+With `copy_to`, every backup is also copied to the second server, so one dead disk can't take both the app and its backups. `nodeploy backup setup` (or `setup`/`deploy`) prepares the access, once:
+1. It creates an SSH key for the app server (`~/.nodeploy/backup-copy-key`).
+2. It authorizes that key on the second server with `restrict`, so the key can copy files but gets no terminal or port forwarding.
+3. It records the second server's host key on the app server.
+4. It tests the connection.
+
+Each copy is uploaded under a temporary name and renamed into place. Old copies on the second server are pruned to `copy_to.keep`. If a copy fails, `backup now`, `deploy` and the backup log warn about it, but the backup on the app server still counts.
+
 ```sh
 nodeploy backup now                 # back up right now
 nodeploy backup list                # backups on the server, newest first, and the schedule

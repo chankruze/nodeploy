@@ -188,3 +188,34 @@ describe("backup in nodeploy.yml", () => {
     );
   });
 });
+
+describe("backup.copy_to in nodeploy.yml", () => {
+  it("defaults ssh to the app's, path to nodeploy-backups, keep to backup.keep", () => {
+    const config = validateDeployConfig({ ...base, backup: { paths: ["d"], keep: 10, copy_to: { server: "192.168.0.12" } } });
+    expect(config.backup?.copyTo).toEqual({
+      server: "192.168.0.12",
+      ssh: { user: "deploy", keys: undefined, port: 22 },
+      path: "nodeploy-backups",
+      keep: 10,
+    });
+  });
+
+  it("accepts its own ssh, path, and keep", () => {
+    const config = validateDeployConfig({
+      ...base,
+      backup: { paths: ["d"], copy_to: { server: "nas.lan", ssh: { user: "backup", port: 2222 }, path: "~/srv/backups/", keep: 30 } },
+    });
+    expect(config.backup?.copyTo).toMatchObject({ ssh: { user: "backup", port: 2222 }, path: "srv/backups", keep: 30 });
+  });
+
+  it.each([
+    [{}, /copy_to.server/],
+    [{ server: "x", path: "back ups" }, /copy_to.path/],
+    [{ server: "x", path: "../escape" }, /copy_to.path/],
+    [{ server: "x", path: "a;rm -rf" }, /copy_to.path/],
+    [{ server: "x", keep: 0 }, /copy_to.keep/],
+    [{ server: "x", host: "y" }, /unknown key "backup.copy_to.host"/],
+  ])("rejects %j", (copy_to, message) => {
+    expect(() => validateDeployConfig({ ...base, backup: { paths: ["d"], copy_to } })).toThrow(message);
+  });
+});

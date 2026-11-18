@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  authorizeKeyScript,
   buildBackupScript,
   buildRestoreScript,
   cronLine,
@@ -266,5 +267,81 @@ describe("parseBackupListing", () => {
       path: "/root/.nodeploy/backups/arap/2026-11-17_11-40-02_pre-deploy.tar.gz",
     });
     expect(cron).toContain("nodeploy:backup:arap");
+  });
+});
+
+describe("copy to a second server", () => {
+  let remote: string;
+  const copyTo = { server: "192.168.0.12", ssh: { user: "backup", port: 2222 }, path: "nodeploy-backups", keep: 2 };
+
+  beforeEach(() => {
+    remote = fs.mkdtempSync(path.join(os.tmpdir(), "nodeploy-backup-remote-"));
+    // ssh/scp stubs: the "remote" is a local directory. They check the
+    // target and port they're given, and fail on demand.
+    const parse = `
+target=""; port=""; args=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -i|-o) shift 2 ;;
+    -p|-P) port=$2; shift 2 ;;
+    -q) shift ;;
+    *) args="$args
+$1"; shift ;;
+  esac
+done
+[ "\${FAKE_COPY_FAIL:-0}" = 1 ] && exit 255
+[ "$port" = 2222 ] || { echo "wrong port $port" >&2; exit 254; }`;
+    fs.writeFileSync(path.join(bin, "ssh"), `#!/bin/sh\n${parse}\ntarget=$(printf '%s\\n' "$args" | sed -n 2p); cmd=$(printf '%s\\n' "$args" | sed -n '3,$p')\n[ "$target" = backup@192.168.0.12 ] || exit 253\ncd "${remote}" && sh -c "$cmd"\n`, { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, "scp"), `#!/bin/sh\n${parse}\nsrc=$(printf '%s\\n' "$args" | sed -n 2p); dst=$(printf '%s\\n' "$args" | sed -n 3p)\ncase "$dst" in backup@192.168.0.12:*) cp "$src" "${remote}/\${dst#*:}" ;; *) exit 253 ;; esac\n`, { mode: 0o755 });
+  });
+
+  afterEach(() => fs.rmSync(remote, { recursive: true, force: true }));
+
+  const copyScript = () =>
+    buildBackupScript({ service: "arap", deployPath: "$HOME/apps/arap", paths: ["notes.json"], keep: 14, nodeployVersion: "test", copyTo });
+  const remoteArchives = () => fs.readdirSync(path.join(remote, "nodeploy-backups", "arap")).sort();
+
+  it("copies each backup there atomically and keeps copy_to.keep copies", async () => {
+    for (let i = 0; i < 3; i++) {
+      const out = parseBackupOutput(sh(copyScript(), ["scheduled"]).out);
+      expect(out.copyError).toBeNull();
+      expect(out.copied).toMatch(/^backup@192\.168\.0\.12:nodeploy-backups\/arap\/.*_scheduled\.tar\.gz$/);
+      if (i < 2) await pause();
+    }
+    const copies = remoteArchives();
+    expect(copies).toHaveLength(2);
+    expect(copies.some((f) => f.endsWith(".part"))).toBe(false);
+    // Byte-identical to the newest local backup.
+    const newest = archives().at(-1)!;
+    expect(fs.readFileSync(path.join(remote, "nodeploy-backups", "arap", newest))).toEqual(fs.readFileSync(path.join(dest, newest)));
+    expect(archives()).toHaveLength(3); // local keep (14) is separate
+  });
+
+  it("reports a failed copy without failing the backup", () => {
+    const run = sh(copyScript(), ["scheduled"]);
+    expect(run.code).toBe(0);
+    process.env.FAKE_COPY_FAIL = "1";
+    try {
+      const out = parseBackupOutput(sh(copyScript(), ["manual"]).out);
+      expect(out.archive).not.toBeNull();
+      expect(out.error).toBeNull();
+      expect(out.copied).toBeNull();
+      expect(out.copyError).toMatch(/could not copy the backup to backup@192\.168\.0\.12:nodeploy-backups\/arap/);
+    } finally {
+      delete process.env.FAKE_COPY_FAIL;
+    }
+  });
+});
+
+describe("authorizeKeyScript", () => {
+  it("authorizes the copy key once, restricted, and creates the directory", () => {
+    const key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyBody nodeploy-backups@beepl1";
+    const authorized = path.join(home, ".ssh", "authorized_keys");
+    fs.mkdirSync(path.dirname(authorized), { recursive: true });
+    fs.writeFileSync(authorized, "ssh-ed25519 AAAAexisting someone@laptop\n");
+    sh(authorizeKeyScript(key, "nodeploy-backups/arap"));
+    sh(authorizeKeyScript(key, "nodeploy-backups/arap"));
+    expect(fs.readFileSync(authorized, "utf-8")).toBe(`ssh-ed25519 AAAAexisting someone@laptop\nrestrict ${key}\n`);
+    expect(fs.statSync(path.join(home, "nodeploy-backups", "arap")).isDirectory()).toBe(true);
   });
 });

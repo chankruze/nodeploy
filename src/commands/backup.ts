@@ -2,6 +2,8 @@ import type { Command } from "commander";
 import { version } from "../../package.json";
 import { DEPLOY_CONFIG_FILENAME } from "../constants.js";
 import {
+  copyDir,
+  ensureCopyAccess,
   type BackupReason,
   type BackupRunResult,
   listBackups,
@@ -47,6 +49,22 @@ export async function applyBackupSetup(
   opts: { quiet?: boolean } = {},
 ): Promise<boolean> {
   if (!config.backup) return true;
+  const copy = config.backup.copyTo;
+  if (copy) {
+    try {
+      await ensureCopyAccess(
+        target,
+        { host: copy.server, user: copy.ssh.user, port: copy.ssh.port ?? 22, keys: copy.ssh.keys },
+        copy,
+        config.service,
+      );
+      if (!opts.quiet) {
+        success(`  Backups are also copied to ${copy.ssh.user}@${copy.server}:${copyDir(copy, config.service)} (keeping ${copy.keep})`);
+      }
+    } catch (error) {
+      warn(`  Backups won't be copied to ${copy.server} until this is fixed: ${(error as Error).message}`);
+    }
+  }
   try {
     const { cron, warnings } = await setupBackups(
       target,
@@ -77,6 +95,8 @@ export function reportBackup(result: BackupRunResult, indent = ""): boolean {
     return false;
   }
   success(`${indent}Backed up to ${result.archive} (${formatBytes(result.bytes)})`);
+  if (result.copied) success(`${indent}Copied to ${result.copied}`);
+  if (result.copyError) warn(`${indent}${result.copyError} — the backup on the app server is fine`);
   if (result.pruned.length > 0) info(`${indent}Deleted ${result.pruned.length} old backup(s) beyond keep`);
   return true;
 }

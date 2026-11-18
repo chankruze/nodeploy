@@ -87,6 +87,20 @@ export interface BackupConfig {
   schedule: string;
   /** Backups to keep; older ones are deleted. */
   keep: number;
+  /** Optional second server every backup is also copied to, so one dead
+   * disk can't take both the app and its backups. */
+  copyTo?: BackupCopyConfig;
+}
+
+export interface BackupCopyConfig {
+  server: string;
+  /** Defaults to the app's own `ssh` block. */
+  ssh: SSHConfig;
+  /** Directory on that server; each app gets a subdirectory. Relative paths
+   * are relative to that user's home. */
+  path: string;
+  /** Copies kept there; defaults to `backup.keep`. */
+  keep: number;
 }
 
 /** Shape of a per-app `nodeploy.yml` file. */
