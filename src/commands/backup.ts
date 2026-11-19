@@ -97,7 +97,8 @@ async function setupDownloads(
       ].filter(Boolean).join(" and ");
       success(`  Download links set up on ${where}, valid ${download.expiresDays} day(s)`);
     }
-    if (download.public) {
+    // Quiet (deploy) callers are about to rewrite the site themselves.
+    if (download.public && !quiet) {
       const { stdout } = await sshExec(target, siteIncludesSnippetScript(config.service));
       if (stdout.trim() !== "yes") {
         info(`  Public links start working after the next \`nodeploy deploy\` of ${config.service} (its nginx site needs the downloads include)`);
